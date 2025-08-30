@@ -232,7 +232,7 @@ def format_response(results,bug_report=False):
     for result in results:
         meta = result["metadata"]
         if bug_report:
-            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}\n - Issues:{meta['issues']}")
+            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}\n - \tIssues:{meta['issues']}")
         else:
             print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}")
 

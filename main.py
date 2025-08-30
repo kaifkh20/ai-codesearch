@@ -19,7 +19,7 @@ def main():
     
     if bugs:
         print("With bug detection")
-    query.search(repo, q, bugs)
+    query.search(repo, q, bugs=bugs)
 
 if __name__=="__main__":
     main()
