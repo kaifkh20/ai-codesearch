@@ -46,7 +46,7 @@ def load_model():
     return SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 
 # --- Embedding generation with batching ---
-def generate_embeddings(chunks, index_file="index.json", batch_size=16):
+def generate_embeddings(chunks, index_file="index.json", batch_size=1):
     if not chunks:
         print("No chunks to generate embeddings for.")
         return {}
@@ -89,8 +89,9 @@ def generate_query_embeddings(query):
 # --- Cosine similarity ---
 def cosine_sim_cal(query_embed, vector_mappings):
     scores = Counter()
+    query_embed = query_embed.astype(np.float32)
     for key, data in vector_mappings.items():
-        embedding = np.array(data["embedding"])
+        embedding = np.array(data["embedding"],dtype=np.float32)
         similarity = cos_sim(query_embed, embedding)
         scores[key] = float(similarity.item())
     return scores
