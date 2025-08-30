@@ -3,7 +3,7 @@ import ast
 import json
 import numpy as np
 from collections import Counter
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer,CrossEncoder
 from sentence_transformers.util import cos_sim
 
 # --- Extract functions ---
@@ -169,6 +169,39 @@ def search_response(cosine_scores, query, alpha=0.7):
     
     return enhanced_scores
 
+# --- Cross Encoder ---
+def cross_encoder(query, union_scores):
+    """Re-rank results using cross-encoder for better relevance."""
+    if not union_scores:
+        return {}
+    
+    to_predict = [(query, data['code']) for (combined_key, data) in union_scores.items()]
+    
+    model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
+    
+    predicted_scores = model.predict(to_predict)
+    
+    enhanced_scores = {}
+    for idx, (combined_key, data) in enumerate(union_scores.items()):
+        cross_score = float(predicted_scores[idx])
+        original_score = data['score']
+        
+        # Weight combination: 0.6 cross-encoder + 0.4 original hybrid score
+        final_score = 0.6 * cross_score + 0.4 * original_score
+        
+        enhanced_scores[combined_key] = {
+            'score': final_score,
+            'cross_score': cross_score,
+            'original_score': original_score,
+            'path': data['path'],
+            'func_key': data['func_key'],
+            'code': data['code'],
+            'metadata': data['metadata']
+        }
+    
+    return enhanced_scores
+
+
 # --- Ranking ---
 def ranking(scores, top_k=5):
     results = []
@@ -185,6 +218,7 @@ def ranking(scores, top_k=5):
         })
     
     return results
+
 
 # --- Formatting output ---
 def format_response(results):
@@ -223,8 +257,10 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
     # 5. Apply hybrid scoring
     union_scores = union_score(cosine_scores, query)
     
-    # 6. Rank top K results
-    ranked_results = ranking(union_scores, top_k=top_k)
+    #6 Apply cross encoding
+    final_scores = cross_encoder(query, union_scores)
     
+    # 7. Rank top K results
+    ranked_results = ranking(final_scores, top_k=top_k)    
     # 7. Show output
     format_response(ranked_results)
