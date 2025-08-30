@@ -6,6 +6,7 @@ from collections import Counter
 from sentence_transformers import SentenceTransformer,CrossEncoder
 from sentence_transformers.util import cos_sim
 
+from packages import bug
 # --- Extract functions ---
 def extract_functions_from_file(path, max_lines=500):
     """Extract functions from a Python file. Skip very large files."""
@@ -83,13 +84,15 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=1, vector_ma
             
             for j, (_, fn_name, start, end, code) in enumerate(batch):
                 func_key = f"{fn_name}_{start}_{end}"  # unique key within the path
+                issues = bug.rules_bug(code)
                 vector_mappings[path][func_key] = {
                     "embedding": batch_embeddings[j].tolist(),
                     "code": code,
                     "metadata": {
                         "function_name": fn_name, 
                         "start_line": start, 
-                        "end_line": end
+                        "end_line": end,
+                        "issues" : issues
                     }
                 }
 
@@ -221,17 +224,20 @@ def ranking(scores, top_k=5):
 
 
 # --- Formatting output ---
-def format_response(results):
+def format_response(results,bug_report=False):
     if not results:
         print("No matches found.")
         return
     print("Found in:")
     for result in results:
         meta = result["metadata"]
-        print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}")
+        if bug_report:
+            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}\n - Issues:{meta['issues']}")
+        else:
+            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} (function: {meta['function_name']}) | Score: {result['score']:.3f}")
 
 # --- Full search pipeline ---
-def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="index.json"):
+def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
     # 1. Load cached embeddings if exist
     vector_mappings = load_embeddings(index_file)
     
@@ -263,4 +269,4 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
     # 7. Rank top K results
     ranked_results = ranking(final_scores, top_k=top_k)    
     # 7. Show output
-    format_response(ranked_results)
+    format_response(ranked_results,bug_report=bugs)
