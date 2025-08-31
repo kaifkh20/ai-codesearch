@@ -121,7 +121,7 @@ def generate_query_embeddings(query):
     return model.encode([query])[0]
 
 def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=5):
-
+    
     # Ensure query_embed is 2D
     query_embed = np.array(query_embed, dtype=np.float32)
     if query_embed.ndim == 1:
@@ -138,13 +138,15 @@ def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=5
         raise RuntimeError(f"Failed to load FAISS index: {e}")
 
     distances, indices = index.search(query_embed, top_k)
-
+    
+    with open("vector_map.json",'r') as f:
+        embed_map = json.load(f)
 
     scores = Counter()
     for idx, distance in zip(indices[0], distances[0]):
         if idx == -1:
             continue
-        mapping = vector_mappings.get(str(idx))
+        mapping =embed_map.get(str(idx))
         combined_key = f"{mapping['path']}::{mapping['func_key']}"
         scores[combined_key] = float(distance)
 
@@ -168,7 +170,7 @@ def search_response(cosine_scores, query, alpha=0.7):
     vector_mappings = load_embeddings()
     enhanced_scores = {}
     
-    for combined_key, cosine_score in cosine_scores:
+    for combined_key, cosine_score in cosine_scores.items():
         # Parse the combined key
         path, func_key = combined_key.split("::")
         
