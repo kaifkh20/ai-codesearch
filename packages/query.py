@@ -275,7 +275,9 @@ def format_response(results,bug_report=False):
 
         meta = result["metadata"]
         if bug_report:
-            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']}: {meta['function_name']}) | Score: {result['score']:.3f}")
+            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']}: {meta['function_name']}) | Score: {result['score']:.3f} | \n Issues :")
+            for issue in meta['issues']:
+                print(f"\t- {issue}")
         else:
             print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']} {meta['function_name']}) | Score: {result['score']:.3f}")
 
