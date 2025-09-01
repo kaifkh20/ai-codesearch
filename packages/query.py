@@ -10,6 +10,14 @@ import faiss
 from packages import bug
 from packages import parser
 
+from google import genai
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+
+API_KEY = os.getenv("GEMINI_API")
+
 # Global singletons
 embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
@@ -118,7 +126,7 @@ def load_embeddings(index_file="index.json"):
 # --- Query embedding ---
 def generate_query_embeddings(query):
     model = embedding_model
-    return model.encode([query])[0]
+    return model.encode(query)
 
 def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=5):
     
@@ -281,11 +289,44 @@ def format_response(results,bug_report=False):
         else:
             print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']} {meta['function_name']}) | Score: {result['score']:.3f}")
 
+# --- Query rewriter
+
+def query_rewriter(raw_query):
+    print("=== QUERY REWRITER START ===")
+    # Check API key
+    if not API_KEY:
+        print("ERROR: API_KEY is None or empty!")
+        return [raw_query]  # Fallback to original query
+    
+    
+    try:
+        client = genai.Client(api_key=API_KEY)
+        
+        prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
+        
+        response = client.models.generate_content(
+            model = 'gemini-2.0-flash',
+            contents = prompt
+        )
+        
+        rewritten_terms = response.text.split(',')
+        print("=== QUERY REWRITER END ===")
+        
+        return rewritten_terms
+        
+    except Exception as e:
+        print(f"ERROR in query_rewriter: {type(e).__name__}: {e}")
+        print("Falling back to original query")
+        return [raw_query]  # Fallback to original query
+
 # --- Full search pipeline ---
 def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
     # 1. Load cached embeddings if exist
     vector_mappings = load_embeddings(index_file)
     
+    #Query rewriter
+    query_rewritten = query_rewriter(query)
+
     # 2. Read files and generate embeddings in batches
     #code_chunks = read_files_python(folder, max_lines=max_lines)
     
@@ -303,7 +344,7 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
         return
     
     # 3. Generate query embedding
-    query_embedding = generate_query_embeddings(query)
+    query_embedding = generate_query_embeddings(query=query_rewritten)
     
     # 4. Cosine similarity
     cosine_scores = cosine_sim_cal(query_embedding, vector_mappings, top_k=top_k*2)  # Get more for hybrid scoring
