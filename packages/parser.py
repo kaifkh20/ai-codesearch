@@ -3,6 +3,14 @@ import os
 from tree_sitter import Language, Parser
 from tree_sitter_languages import get_language
 
+from google import genai
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+
+API_KEY = os.getenv("GEMINI_API")
+
 class LanguageConfig:
     """Configuration for different programming languages"""
     
@@ -107,6 +115,31 @@ def _find_identifier_recursive(node, code):
             return result
     return None
 
+def summarize_code(code,fn_name):
+
+        print("========Summarizing Code==========")
+        client = genai.Client(api_key=API_KEY)
+        
+        
+        response = client.models.generate_content(
+            model = 'gemini-2.0-flash',
+            contents = prompt
+        )
+        
+        prompt = f'''
+                    You are a helpful code assistant.
+
+                    Summarize what the following function(given with the function name) does in one or two sentences. 
+                    Focus on the *purpose* of the function, not line-by-line details. 
+                    Avoid repeating variable names unless necessary. 
+                    If the function is a helper or utility, explain what it helps with.
+
+                    Function {fn_name}:
+                    {code}
+
+                '''       
+        return response.text
+
 
 def traverse_tree(node, code, path, language_config, context=None):
     if context is None:
@@ -135,6 +168,7 @@ def traverse_tree(node, code, path, language_config, context=None):
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
             "code": code[node.start_byte:node.end_byte]
+            "summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
         })
 
     # If this is a class, push its name onto the context stack

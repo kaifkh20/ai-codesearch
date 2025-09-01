@@ -25,7 +25,7 @@ cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 # --- Add to FAISS
 def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.json"):
     # Generate embeddings for all chunks in the batch
-    codes = [chunk["code"] for chunk in batch]
+    codes = [f'Summary:{chunk["summary"]}Code:{chunk["code"]}' for chunk in batch]
     embeddings = embedding_model.encode(codes, batch_size=16, convert_to_numpy=True, normalize_embeddings=True)
     embeddings = np.array(embeddings).astype('float32')
 
@@ -107,7 +107,8 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
                     "language": chunk["language"],
                     "start_line": start,
                     "end_line": end,
-                    "issues": issues
+                    "issues": issues,
+                    "summary" : chunk['summary']
                 }
             }
 
