@@ -1,7 +1,4 @@
 .venv
 .env
 __pycache__
-index.json
-vector_map.json
-index.faiss
 

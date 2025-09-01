@@ -1,0 +1,166 @@
+{
+  "0": {
+    "path": "../ai-engine/server.py",
+    "func_key": "query_search_6_23"
+  },
+  "1": {
+    "path": "../ai-engine/client.py",
+    "func_key": "main_4_27"
+  },
+  "2": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer_26_226"
+  },
+  "3": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.__init___29_31"
+  },
+  "4": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.load_config_33_82"
+  },
+  "5": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.is_valid_url_84_97"
+  },
+  "6": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.discover_from_manual_seeds_99_112"
+  },
+  "7": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.discover_from_sitemaps_114_144"
+  },
+  "8": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.discover_from_wikipedia_api_146_196"
+  },
+  "9": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.update_crawler_config_198_201"
+  },
+  "10": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "URLDiscoverer.discover_all_urls_204_226"
+  },
+  "11": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "load_existing_docs_229_246"
+  },
+  "12": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "fetch_page_248_256"
+  },
+  "13": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "extract_content_258_271"
+  },
+  "14": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "add_to_faiss_273_342"
+  },
+  "15": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "build_inverted_index_345_385"
+  },
+  "16": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "update_inverted_index_388_449"
+  },
+  "17": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "save_to_file_451_503"
+  },
+  "18": {
+    "path": "../ai-engine/packages/crawler.py",
+    "func_key": "crawl_506_532"
+  },
+  "19": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "load_docs_26_32"
+  },
+  "20": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "load_index_34_37"
+  },
+  "21": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "load_stats_39_42"
+  },
+  "22": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "query_score_46_50"
+  },
+  "23": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "ranking_52_56"
+  },
+  "24": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "tf_idf_59_77"
+  },
+  "25": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "bm25_80_100"
+  },
+  "26": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "query_index_102_110"
+  },
+  "27": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "fuzzy_fill_113_134"
+  },
+  "28": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "check_phrase_in_doc_136_152"
+  },
+  "29": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "phrase_search_154_176"
+  },
+  "30": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "normal_search_178_179"
+  },
+  "31": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "preprocess_query_181_184"
+  },
+  "32": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "merge_results_186_204"
+  },
+  "33": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "embed_query_207_234"
+  },
+  "34": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "union_weightage_236_246"
+  },
+  "35": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "cross_encoder_248_276"
+  },
+  "36": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "rag_gen_278_298"
+  },
+  "37": {
+    "path": "../ai-engine/packages/query.py",
+    "func_key": "response_query_323_343"
+  },
+  "38": {
+    "path": "../ai-engine/packages/text_preprocess.py",
+    "func_key": "tokenize_10_16"
+  },
+  "39": {
+    "path": "../ai-engine/packages/text_preprocess.py",
+    "func_key": "stemming_18_21"
+  },
+  "40": {
+    "path": "../ai-engine/packages/text_preprocess.py",
+    "func_key": "text_preprocess_23_29"
+  }
+}

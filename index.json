@@ -1,0 +1,570 @@
+{
+  "../ai-engine/server.py": {
+    "query_search_6_23": {
+      "embedding": 0,
+      "code": "def query_search():\n    q = request.args.get('q')  # Changed from 'name' to 'q'\n    if not q: \n        abort(400, description=\"Invalid Query - 'q' parameter is missing or empty.\")\n    \n\n    rag_answer, list_of_docs = query.response_query(q)\n    \n    ans_docs = []\n\n    for doc in list_of_docs:\n        ans_docs.append((float(doc[0]),doc[1]))\n\n\n    return jsonify({\n        \"rag_answer\": rag_answer,\n        \"list_of_docs\": ans_docs\n    })",
+      "metadata": {
+        "function_name": "query_search",
+        "category": "function",
+        "language": "python",
+        "start_line": 6,
+        "end_line": 23,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    }
+  },
+  "../ai-engine/client.py": {
+    "main_4_27": {
+      "embedding": 1,
+      "code": "def main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"query\", help=\"Search query\")\n    args = parser.parse_args()\n    \n    resp = requests.get(\n        \"http://127.0.0.1:8080/query\",\n        params={\"q\": args.query}        \n    )\n    \n    if resp.status_code != 200:\n        print(f\"Error: {resp.status_code} - {resp.text}\")\n        return\n    \n    data = resp.json()\n    \n    print(\"Search results:\")\n    \n    rag_answer = \":\".join(data[\"rag_answer\"].split(\":\")[1:])\n    list_of_docs = data[\"list_of_docs\"]\n    print(f\"\\n{rag_answer}\\n\")\n    \n    for idx, (doc_id, doc_url) in enumerate(list_of_docs, 1):\n        print(f\"S.no : {idx} ID:{doc_id} - {doc_url}\")",
+      "metadata": {
+        "function_name": "main",
+        "category": "function",
+        "language": "python",
+        "start_line": 4,
+        "end_line": 27,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    }
+  },
+  "../ai-engine/packages/crawler.py": {
+    "URLDiscoverer_26_226": {
+      "embedding": 2,
+      "code": "class URLDiscoverer:\n    \"\"\"Handles URL discovery from various sources\"\"\"\n    \n    def __init__(self, config_file=\"crawler_config.json\"):\n        self.load_config(config_file)\n        self.discovered_urls: Set[str] = set()\n        \n    def load_config(self, config_file=CONFIG_FILE):\n        \"\"\"Load URL discovery configuration\"\"\"\n\n        default_config = {\n            \"sitemap_urls\": [],\n            \"rss_feeds\": [\n                \"https://arxiv.org/rss/cs.AI\",\n                \"https://feeds.feedburner.com/oreilly/radar\"\n            ],\n            \"search_apis\": {\n                \"wikipedia\": {\n                    \"enabled\": True,\n                    \"base_url\": \"https://en.wikipedia.org/w/api.php\",\n                    \"topics\": [\n                        {\"topic\": \"machine learning\", \"fetched\": False},\n                        {\"topic\": \"neural networks\", \"fetched\": False},\n                        {\"topic\": \"computer vision\", \"fetched\": False},\n                        {\"topic\": \"natural language processing\", \"fetched\": False},\n                        {\"topic\": \"deep learning\", \"fetched\": False},\n                        {\"topic\": \"maths\", \"fetched\": False},\n                        {\"topic\": \"cnn\", \"fetched\": False},\n                        {\"topic\": \"convolutional neural network\", \"fetched\": False}\n                    ]\n                }\n            },\n            \"manual_seeds\": [\n                \"https://en.wikipedia.org/wiki/Artificial_intelligence\",\n                \"https://en.wikipedia.org/wiki/Machine_learning\",\n                \"https://arxiv.org/abs/1706.03762\",\n                \"https://en.wikipedia.org/wiki/Natural_language_processing\"\n            ],\n            \"allowed_domains\": [\n                \"en.wikipedia.org\",\n                \"arxiv.org\",\n                \"feeds.feedburner.com\"\n            ],\n            \"max_urls_per_source\": 10,\n            \"delay_between_requests\": 1\n        }\n\n        if os.path.exists(config_file):\n            with open(config_file, 'r') as f:\n                user_config = json.load(f)\n                default_config.update(user_config)\n        else:\n            # Save default config\n            with open(config_file, 'w') as f:\n                json.dump(default_config, f, indent=2)\n\n        self.config = default_config\n    \n    def is_valid_url(self, url: str) -> bool:\n        \"\"\"Check if URL should be included\"\"\"\n        parsed = urlparse(url)\n        \n        # Check allowed domains\n        if self.config[\"allowed_domains\"]:\n            if parsed.netloc not in self.config[\"allowed_domains\"]:\n                return False\n        \n        # Basic URL validation\n        if not url.startswith(('http://', 'https://')):\n            return False\n            \n        return True\n   \n    def discover_from_manual_seeds(self):\n        \"\"\"Discover URLs from manually specified seeds in the config\"\"\"\n        urls = []\n        seeds = self.config.get(\"manual_seeds\", [])\n        max_urls = self.config.get(\"max_urls_per_source\", 50)\n\n        for url in seeds[:max_urls]:\n            if self.is_valid_url(url):\n                urls.append(url)\n            else:\n                print(f\"Invalid manual seed URL skipped: {url}\")\n\n        print(f\"Discovered {len(urls)} URLs from manual seeds\")\n        return urls \n\n    def discover_from_sitemaps(self):\n        \"\"\"Discover URLs from XML sitemaps\"\"\"\n        urls = []\n        max_urls = self.config[\"max_urls_per_source\"]\n        \n        for sitemap_url in self.config[\"sitemap_urls\"]:\n            print(f\"Processing sitemap: {sitemap_url}\")\n            \n            try:\n                headers = {\n                    \"User-Agent\": \"AITestingBot/1.0 (mailto:kaifkhan.saif@gmail.com) PythonRequestsForToyProject/2.0\"\n                } \n                response = requests.get(sitemap_url, headers=headers, timeout=10)\n                response.raise_for_status()\n                \n                soup = BeautifulSoup(response.content, 'xml')\n                \n                # Extract URLs from sitemap\n                url_elements = soup.find_all('url')\n                for url_elem in url_elements[:max_urls]:\n                    loc = url_elem.find('loc')\n                    if loc and self.is_valid_url(loc.text):\n                        urls.append(loc.text)\n                        \n                time.sleep(self.config[\"delay_between_requests\"])\n                        \n            except Exception as e:\n                print(f\"Error processing sitemap {sitemap_url}: {e}\")\n        \n        print(f\"Discovered {len(urls)} URLs from sitemaps\")\n        return urls\n    \n    def discover_from_wikipedia_api(self) -> List[str]:\n        \"\"\"Discover URLs using Wikipedia search API\"\"\"\n        urls = []\n        wiki_config = self.config[\"search_apis\"][\"wikipedia\"]\n\n        \n        if not wiki_config.get(\"enabled\"):\n            return urls\n        \n        base_url = wiki_config[\"base_url\"]\n        topics = wiki_config[\"topics\"]\n        max_per_topic = self.config[\"max_urls_per_source\"] // len(topics) if topics else 10\n        \n        for topic in topics:\n            print(f\"Searching Wikipedia for: {topic['topic']}\")\n            \n            if topic[\"fetched\"]==True:\n                print(\"Already fetched from wiki_api\")\n                continue\n\n            params = {\n                'action': 'query',\n                'format': 'json',\n                'list': 'search',\n                'srsearch': topic[\"topic\"],\n                'srlimit': max_per_topic\n            }\n            \n            try:\n                headers = {\n                    \"User-Agent\": \"AITestingBot/1.0 (mailto:kaifkhan.saif@gmail.com) PythonRequestsForToyProject/2.0\"\n                } \n                response = requests.get(base_url, params=params,headers=headers, timeout=10)\n                response.raise_for_status()\n                data = response.json()\n                \n                if 'query' in data and 'search' in data['query']:\n                    for result in data['query']['search']:\n                        page_title = result['title']\n                        url = f\"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}\"\n                        \n                        if self.is_valid_url(url):\n                            urls.append(url)\n                            topic[\"fetched\"] = True               \n                time.sleep(self.config[\"delay_between_requests\"])\n                            \n            except Exception as e:\n                print(f\"Error searching Wikipedia for '{topic}': {e}\")\n        \n        print(f\"Discovered {len(urls)} URLs from Wikipedia API\")\n        return urls\n    \n    def update_crawler_config(self, config_file=\"crawler_config.json\"):\n\n        with open(config_file, 'w') as f:\n            json.dump(self.config, f, indent=2)\n    \n\n    def discover_all_urls(self):\n        \"\"\"Main method to discover URLs from all sources\"\"\"\n        all_urls = []\n        print(\"=== Starting URL Discovery ===\")\n\n        # Method 1: Sitemaps\n        sitemap_urls = self.discover_from_sitemaps()\n        all_urls.extend(sitemap_urls)\n\n        # Method 2: Wikipedia API\n        wiki_urls = self.discover_from_wikipedia_api()\n        all_urls.extend(wiki_urls)\n\n        # Method 3: Manual seeds\n        manual_urls = self.discover_from_manual_seeds()\n        all_urls.extend(manual_urls)\n\n        # Remove duplicates while preserving order\n        unique_urls = list(dict.fromkeys(all_urls))\n        \n        self.update_crawler_config()\n        print(f\"Total unique URLs discovered: {len(unique_urls)}\")\n        return unique_urls",
+      "metadata": {
+        "function_name": "URLDiscoverer",
+        "category": "class",
+        "language": "python",
+        "start_line": 26,
+        "end_line": 226,
+        "issues": []
+      }
+    },
+    "URLDiscoverer.__init___29_31": {
+      "embedding": 3,
+      "code": "def __init__(self, config_file=\"crawler_config.json\"):\n        self.load_config(config_file)\n        self.discovered_urls: Set[str] = set()",
+      "metadata": {
+        "function_name": "URLDiscoverer.__init__",
+        "category": "function",
+        "language": "python",
+        "start_line": 29,
+        "end_line": 31,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "URLDiscoverer.load_config_33_82": {
+      "embedding": 4,
+      "code": "def load_config(self, config_file=CONFIG_FILE):\n        \"\"\"Load URL discovery configuration\"\"\"\n\n        default_config = {\n            \"sitemap_urls\": [],\n            \"rss_feeds\": [\n                \"https://arxiv.org/rss/cs.AI\",\n                \"https://feeds.feedburner.com/oreilly/radar\"\n            ],\n            \"search_apis\": {\n                \"wikipedia\": {\n                    \"enabled\": True,\n                    \"base_url\": \"https://en.wikipedia.org/w/api.php\",\n                    \"topics\": [\n                        {\"topic\": \"machine learning\", \"fetched\": False},\n                        {\"topic\": \"neural networks\", \"fetched\": False},\n                        {\"topic\": \"computer vision\", \"fetched\": False},\n                        {\"topic\": \"natural language processing\", \"fetched\": False},\n                        {\"topic\": \"deep learning\", \"fetched\": False},\n                        {\"topic\": \"maths\", \"fetched\": False},\n                        {\"topic\": \"cnn\", \"fetched\": False},\n                        {\"topic\": \"convolutional neural network\", \"fetched\": False}\n                    ]\n                }\n            },\n            \"manual_seeds\": [\n                \"https://en.wikipedia.org/wiki/Artificial_intelligence\",\n                \"https://en.wikipedia.org/wiki/Machine_learning\",\n                \"https://arxiv.org/abs/1706.03762\",\n                \"https://en.wikipedia.org/wiki/Natural_language_processing\"\n            ],\n            \"allowed_domains\": [\n                \"en.wikipedia.org\",\n                \"arxiv.org\",\n                \"feeds.feedburner.com\"\n            ],\n            \"max_urls_per_source\": 10,\n            \"delay_between_requests\": 1\n        }\n\n        if os.path.exists(config_file):\n            with open(config_file, 'r') as f:\n                user_config = json.load(f)\n                default_config.update(user_config)\n        else:\n            # Save default config\n            with open(config_file, 'w') as f:\n                json.dump(default_config, f, indent=2)\n\n        self.config = default_config",
+      "metadata": {
+        "function_name": "URLDiscoverer.load_config",
+        "category": "function",
+        "language": "python",
+        "start_line": 33,
+        "end_line": 82,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "URLDiscoverer.is_valid_url_84_97": {
+      "embedding": 5,
+      "code": "def is_valid_url(self, url: str) -> bool:\n        \"\"\"Check if URL should be included\"\"\"\n        parsed = urlparse(url)\n        \n        # Check allowed domains\n        if self.config[\"allowed_domains\"]:\n            if parsed.netloc not in self.config[\"allowed_domains\"]:\n                return False\n        \n        # Basic URL validation\n        if not url.startswith(('http://', 'https://')):\n            return False\n            \n        return True",
+      "metadata": {
+        "function_name": "URLDiscoverer.is_valid_url",
+        "category": "function",
+        "language": "python",
+        "start_line": 84,
+        "end_line": 97,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "URLDiscoverer.discover_from_manual_seeds_99_112": {
+      "embedding": 6,
+      "code": "def discover_from_manual_seeds(self):\n        \"\"\"Discover URLs from manually specified seeds in the config\"\"\"\n        urls = []\n        seeds = self.config.get(\"manual_seeds\", [])\n        max_urls = self.config.get(\"max_urls_per_source\", 50)\n\n        for url in seeds[:max_urls]:\n            if self.is_valid_url(url):\n                urls.append(url)\n            else:\n                print(f\"Invalid manual seed URL skipped: {url}\")\n\n        print(f\"Discovered {len(urls)} URLs from manual seeds\")\n        return urls",
+      "metadata": {
+        "function_name": "URLDiscoverer.discover_from_manual_seeds",
+        "category": "function",
+        "language": "python",
+        "start_line": 99,
+        "end_line": 112,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "URLDiscoverer.discover_from_sitemaps_114_144": {
+      "embedding": 7,
+      "code": "def discover_from_sitemaps(self):\n        \"\"\"Discover URLs from XML sitemaps\"\"\"\n        urls = []\n        max_urls = self.config[\"max_urls_per_source\"]\n        \n        for sitemap_url in self.config[\"sitemap_urls\"]:\n            print(f\"Processing sitemap: {sitemap_url}\")\n            \n            try:\n                headers = {\n                    \"User-Agent\": \"AITestingBot/1.0 (mailto:kaifkhan.saif@gmail.com) PythonRequestsForToyProject/2.0\"\n                } \n                response = requests.get(sitemap_url, headers=headers, timeout=10)\n                response.raise_for_status()\n                \n                soup = BeautifulSoup(response.content, 'xml')\n                \n                # Extract URLs from sitemap\n                url_elements = soup.find_all('url')\n                for url_elem in url_elements[:max_urls]:\n                    loc = url_elem.find('loc')\n                    if loc and self.is_valid_url(loc.text):\n                        urls.append(loc.text)\n                        \n                time.sleep(self.config[\"delay_between_requests\"])\n                        \n            except Exception as e:\n                print(f\"Error processing sitemap {sitemap_url}: {e}\")\n        \n        print(f\"Discovered {len(urls)} URLs from sitemaps\")\n        return urls",
+      "metadata": {
+        "function_name": "URLDiscoverer.discover_from_sitemaps",
+        "category": "function",
+        "language": "python",
+        "start_line": 114,
+        "end_line": 144,
+        "issues": []
+      }
+    },
+    "URLDiscoverer.discover_from_wikipedia_api_146_196": {
+      "embedding": 8,
+      "code": "def discover_from_wikipedia_api(self) -> List[str]:\n        \"\"\"Discover URLs using Wikipedia search API\"\"\"\n        urls = []\n        wiki_config = self.config[\"search_apis\"][\"wikipedia\"]\n\n        \n        if not wiki_config.get(\"enabled\"):\n            return urls\n        \n        base_url = wiki_config[\"base_url\"]\n        topics = wiki_config[\"topics\"]\n        max_per_topic = self.config[\"max_urls_per_source\"] // len(topics) if topics else 10\n        \n        for topic in topics:\n            print(f\"Searching Wikipedia for: {topic['topic']}\")\n            \n            if topic[\"fetched\"]==True:\n                print(\"Already fetched from wiki_api\")\n                continue\n\n            params = {\n                'action': 'query',\n                'format': 'json',\n                'list': 'search',\n                'srsearch': topic[\"topic\"],\n                'srlimit': max_per_topic\n            }\n            \n            try:\n                headers = {\n                    \"User-Agent\": \"AITestingBot/1.0 (mailto:kaifkhan.saif@gmail.com) PythonRequestsForToyProject/2.0\"\n                } \n                response = requests.get(base_url, params=params,headers=headers, timeout=10)\n                response.raise_for_status()\n                data = response.json()\n                \n                if 'query' in data and 'search' in data['query']:\n                    for result in data['query']['search']:\n                        page_title = result['title']\n                        url = f\"https://en.wikipedia.org/wiki/{page_title.replace(' ', '_')}\"\n                        \n                        if self.is_valid_url(url):\n                            urls.append(url)\n                            topic[\"fetched\"] = True               \n                time.sleep(self.config[\"delay_between_requests\"])\n                            \n            except Exception as e:\n                print(f\"Error searching Wikipedia for '{topic}': {e}\")\n        \n        print(f\"Discovered {len(urls)} URLs from Wikipedia API\")\n        return urls",
+      "metadata": {
+        "function_name": "URLDiscoverer.discover_from_wikipedia_api",
+        "category": "function",
+        "language": "python",
+        "start_line": 146,
+        "end_line": 196,
+        "issues": []
+      }
+    },
+    "URLDiscoverer.update_crawler_config_198_201": {
+      "embedding": 9,
+      "code": "def update_crawler_config(self, config_file=\"crawler_config.json\"):\n\n        with open(config_file, 'w') as f:\n            json.dump(self.config, f, indent=2)",
+      "metadata": {
+        "function_name": "URLDiscoverer.update_crawler_config",
+        "category": "function",
+        "language": "python",
+        "start_line": 198,
+        "end_line": 201,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "URLDiscoverer.discover_all_urls_204_226": {
+      "embedding": 10,
+      "code": "def discover_all_urls(self):\n        \"\"\"Main method to discover URLs from all sources\"\"\"\n        all_urls = []\n        print(\"=== Starting URL Discovery ===\")\n\n        # Method 1: Sitemaps\n        sitemap_urls = self.discover_from_sitemaps()\n        all_urls.extend(sitemap_urls)\n\n        # Method 2: Wikipedia API\n        wiki_urls = self.discover_from_wikipedia_api()\n        all_urls.extend(wiki_urls)\n\n        # Method 3: Manual seeds\n        manual_urls = self.discover_from_manual_seeds()\n        all_urls.extend(manual_urls)\n\n        # Remove duplicates while preserving order\n        unique_urls = list(dict.fromkeys(all_urls))\n        \n        self.update_crawler_config()\n        print(f\"Total unique URLs discovered: {len(unique_urls)}\")\n        return unique_urls",
+      "metadata": {
+        "function_name": "URLDiscoverer.discover_all_urls",
+        "category": "function",
+        "language": "python",
+        "start_line": 204,
+        "end_line": 226,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "load_existing_docs_229_246": {
+      "embedding": 11,
+      "code": "def load_existing_docs():\n    \"\"\"Load existing documents from file and return a set of URLs and the documents list.\"\"\"\n    existing_urls = set()\n    existing_docs = []\n    \n    if os.path.exists(DOCS_FILE):\n        try:\n            with open(DOCS_FILE, \"r\", encoding=\"utf-8\") as f:\n                for line in f:\n                    if line.strip():\n                        doc = json.loads(line.strip())\n                        existing_urls.add(doc.get(\"url\"))\n                        existing_docs.append(doc)\n            print(f\"Loaded {len(existing_docs)} existing documents\")\n        except Exception as e:\n            print(f\"Error loading existing docs: {e}\")\n    \n    return existing_urls, existing_docs",
+      "metadata": {
+        "function_name": "load_existing_docs",
+        "category": "function",
+        "language": "python",
+        "start_line": 229,
+        "end_line": 246,
+        "issues": []
+      }
+    },
+    "fetch_page_248_256": {
+      "embedding": 12,
+      "code": "def fetch_page(url):\n    try:\n        headers = {\"User-Agent\": \"AI/SearchBot/0.1\"}\n        res = requests.get(url, headers=headers, timeout=5)\n        res.raise_for_status()\n        return res.text\n    except Exception as e:\n        print(f\"Failed to fetch page {url}: {e}\")\n        return None",
+      "metadata": {
+        "function_name": "fetch_page",
+        "category": "function",
+        "language": "python",
+        "start_line": 248,
+        "end_line": 256,
+        "issues": []
+      }
+    },
+    "extract_content_258_271": {
+      "embedding": 13,
+      "code": "def extract_content(html, url):\n    soup = BeautifulSoup(html, \"html.parser\")\n    title = soup.title.string if soup.title else \"Untitled\"\n    text = soup.get_text(separator=\" \", strip=True)\n    text_tokens = tp.text_preprocess(text)\n    \n\n    return {\n        \"url\": url,\n        \"title\": title,\n        \"text\": ' '.join(text_tokens),\n        \"fetched_at\": datetime.utcnow().isoformat(),\n        \"raw_text\" : text\n    }",
+      "metadata": {
+        "function_name": "extract_content",
+        "category": "function",
+        "language": "python",
+        "start_line": 258,
+        "end_line": 271,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "add_to_faiss_273_342": {
+      "embedding": 14,
+      "code": "def add_to_faiss(doc_id, doc_text, update=False, faiss_file=FAISS_FILE,vector_file=VECTOR_FILE):\n    \"\"\"\n    Add document to FAISS index.\n    \n    \"\"\"\n    \n    # Input validation\n    if not doc_id or not doc_text:\n        raise ValueError(\"doc_id and doc_text cannot be empty\")\n    \n    # Initialize model\n    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')\n    \n    # Generate embeddings\n    embeddings = model.encode([doc_text])\n    embeddings = np.array(embeddings).astype('float32')\n    dimension = embeddings.shape[1]  # Usually 384 for all-MiniLM-L6-v2\n    \n    if os.path.exists(faiss_file):\n        # UPDATE MODE: Load existing index\n        try:\n            index = faiss.read_index(faiss_file)\n            print(f\"Existing index loaded successfully with {index.ntotal} vectors\")\n            \n            # Load existing mapping\n            try:\n                with open(vector_file, \"r\") as f:\n                    existing_mapping = json.load(f)\n            except FileNotFoundError:\n                existing_mapping = {}\n                print(\"Warning: Vector mapping file not found, creating new mapping\")\n                \n        except Exception as e:\n            print(f\"Error loading existing index: {e}\")\n            print(\"Creating new index instead\")\n            index = faiss.IndexFlatL2(dimension)\n            existing_mapping = {}\n    else:\n        print(\"Building new index from scratch\")\n        index = faiss.IndexFlatL2(dimension)\n        existing_mapping = {}\n    \n    # Check if doc_id already exists\n    if doc_id in existing_mapping:\n        print(f\"Warning: doc_id '{doc_id}' already exists. It will be overwritten.\")\n    \n    # Add new embedding to index\n    index.add(embeddings)\n    vector_index_id = index.ntotal - 1\n    \n    # Update mapping\n    existing_mapping[doc_id] = vector_index_id\n    \n    # Save updated index\n    try:\n        faiss.write_index(index, faiss_file)\n        print(f\"Index saved successfully to {faiss_file}\")\n    except Exception as e:\n        raise RuntimeError(f\"Failed to save FAISS index: {e}\")\n    \n    # Save updated mapping\n    try:\n        \n        with open(vector_file, \"w\") as f:\n            json.dump(existing_mapping, f)\n        print(f\"Vector mapping saved successfully to {faiss_file}\")\n    except Exception as e:\n        raise RuntimeError(f\"Failed to save vector mapping: {e}\")\n    \n    print(f\"Document '{doc_id}' added successfully at index position {vector_index_id}\")",
+      "metadata": {
+        "function_name": "add_to_faiss",
+        "category": "function",
+        "language": "python",
+        "start_line": 273,
+        "end_line": 342,
+        "issues": []
+      }
+    },
+    "build_inverted_index_345_385": {
+      "embedding": 15,
+      "code": "def build_inverted_index(docs_file=DOCS_FILE, index_file=INDEX_FILE, stats_file=STATS_FILE):\n    \"\"\"Build complete inverted index from all documents with positional information.\"\"\"\n    index = defaultdict(lambda: {\"docs\": {}, \"df\": 0})\n    \n    doc_len = {}\n    total_docs = 0\n    with open(docs_file, \"r\", encoding=\"utf-8\") as f:\n        for line in f:\n            if line.strip():\n                doc = json.loads(line.strip())\n                doc_id, text = str(doc[\"id\"]), doc[\"text\"].split()  # Ensure doc_id is string\n                \n                total_docs += 1\n                doc_len[doc_id] = len(text)\n                \n                # Track word positions\n                word_positions = defaultdict(list)\n                for pos, word in enumerate(text):\n                    word_positions[word].append(pos)\n                \n                # Build index with tf and positions\n                for word, positions in word_positions.items():\n                    index[word][\"docs\"][doc_id] = {\n                        \"tf\": len(positions),\n                        \"pos\": positions\n                    }\n                    index[word][\"df\"] += 1\n                add_to_faiss(doc_id=doc_id,doc_text=doc[\"text\"])\n                \n    # Save index\n    with open(index_file, \"w\", encoding=\"utf-8\") as f:\n        json.dump(index, f, ensure_ascii=False)\n    \n    # Save doc stats\n    avg_len = sum(doc_len.values()) / total_docs if total_docs > 0 else 0\n    stats = {\"doc_len\": doc_len, \"avg_len\": avg_len, \"N\": total_docs}\n    \n    with open(stats_file, \"w\", encoding=\"utf-8\") as f:\n        json.dump(stats, f, ensure_ascii=False)\n    \n    print(f\"Inverted index built with {len(index)} unique words across {total_docs} docs\")",
+      "metadata": {
+        "function_name": "build_inverted_index",
+        "category": "function",
+        "language": "python",
+        "start_line": 345,
+        "end_line": 385,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "update_inverted_index_388_449": {
+      "embedding": 16,
+      "code": "def update_inverted_index(new_docs, index_file=INDEX_FILE, stats_file=STATS_FILE):\n    \"\"\"Update existing index with new documents only.\"\"\"\n    # Load existing index\n    existing_index = defaultdict(lambda: {\"docs\": {}, \"df\": 0})\n    if os.path.exists(index_file):\n        try:\n            with open(index_file, \"r\", encoding=\"utf-8\") as f:\n                loaded_index = json.load(f)\n                for word, doc_dict in loaded_index.items():\n                    existing_index[word] = doc_dict\n            print(f\"Loaded existing index with {len(existing_index)} words\")\n        except Exception as e:\n            print(f\"Error loading existing index: {e}\")\n    \n    # Load stats\n    if os.path.exists(stats_file):\n        with open(stats_file, \"r\", encoding=\"utf-8\") as f:\n            stats = json.load(f)\n        doc_len = stats.get(\"doc_len\", {})\n        total_docs = stats.get(\"N\", 0)\n    else:\n        doc_len = {}\n        total_docs = 0\n    \n    # Add new documents\n    for doc in new_docs:\n        doc_id, tokens = str(doc[\"id\"]), doc[\"text\"].split()\n\n        \n        if doc_id in doc_len:  # skip if already indexed\n            continue\n        \n        total_docs += 1\n        doc_len[doc_id] = len(tokens)\n        \n        # Track word positions\n        word_positions = defaultdict(list)\n        for pos, word in enumerate(tokens):\n            word_positions[word].append(pos)\n        \n        # Update index with tf and positions\n        for word, positions in word_positions.items():\n            existing_index[word][\"docs\"][doc_id] = {\n                \"tf\": len(positions),\n                \"pos\": positions\n            }\n            existing_index[word][\"df\"] += 1  # increase doc frequency by 1 for this doc\n        \n        add_to_faiss(doc_id=doc_id,doc_text=doc[\"text\"])\n    \n    # Save updated index\n    with open(index_file, \"w\", encoding=\"utf-8\") as f:\n        json.dump(existing_index, f, ensure_ascii=False)\n    \n    # Save stats\n    avg_len = sum(doc_len.values()) / total_docs if total_docs > 0 else 0\n    stats = {\"doc_len\": doc_len, \"avg_len\": avg_len, \"N\": total_docs}\n    \n    with open(stats_file, \"w\", encoding=\"utf-8\") as f:\n        json.dump(stats, f, ensure_ascii=False)\n    \n    print(f\"Updated index with {len(new_docs)} new documents. Total docs: {total_docs}, Total words: {len(existing_index)}\")",
+      "metadata": {
+        "function_name": "update_inverted_index",
+        "category": "function",
+        "language": "python",
+        "start_line": 388,
+        "end_line": 449,
+        "issues": []
+      }
+    },
+    "save_to_file_451_503": {
+      "embedding": 17,
+      "code": "def save_to_file():\n    # Load existing documents\n    existing_urls, existing_docs = load_existing_docs()\n    \n    discoverer = URLDiscoverer()\n    seeds = discoverer.discover_all_urls()\n    print(f\"Found {len(seeds)} URLs to crawl\") \n\n    new_docs = []\n    skipped_count = 0\n    \n    for url in seeds:\n        if url in existing_urls:\n            print(f\"Skipping already fetched URL: {url}\")\n            skipped_count += 1\n            continue\n            \n        print(f\"Fetching new URL: {url}\")\n        html = fetch_page(url)\n        if not html or not url:\n            continue\n            \n        doc = extract_content(html, url)\n        # Assign ID based on total number of docs (existing + new)\n        doc[\"id\"] = str(len(existing_docs) + len(new_docs) + 1)\n        new_docs.append(doc)\n    \n    if new_docs:\n        # Append new documents to the file\n        with open(DOCS_FILE, \"a\", encoding=\"utf-8\") as f:\n            for doc in new_docs:\n                f.write(json.dumps(doc, ensure_ascii=False) + \"\\n\")\n        \n        print(f\"Added {len(new_docs)} new documents to {DOCS_FILE}\")\n        \n        # Only update index if we have new documents\n        if os.path.exists(INDEX_FILE):\n            update_inverted_index(new_docs, index_file=INDEX_FILE)\n        \n        #only update fssai when we have new docs\n        \n        else:\n            # If index doesn't exist, build it from scratch\n            print(\"Index file doesn't exist. Building complete index...\")\n            build_inverted_index(docs_file=DOCS_FILE, index_file=INDEX_FILE)\n    else:\n        print(\"No new documents to add - index remains unchanged\")\n    \n    if skipped_count > 0:\n        print(f\"Skipped {skipped_count} already existing documents\")\n    \n    total_docs = len(existing_docs) + len(new_docs)\n    print(f\"Total documents in collection: {total_docs}\")",
+      "metadata": {
+        "function_name": "save_to_file",
+        "category": "function",
+        "language": "python",
+        "start_line": 451,
+        "end_line": 503,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "crawl_506_532": {
+      "embedding": 18,
+      "code": "def crawl(query=None):\n    '''\n    save_to_file_flag = False\n    if query is not None:\n        discoverer = URLDiscoverer()\n        discoverer.load_config()\n        config = discoverer.config\n        wiki_config = config[\"search_apis\"][\"wikipedia\"][\"topics\"]\n        \n        topic_present = False\n        for topic in wiki_config:\n            if topic[\"topic\"]==query:\n                topic_present = True\n                break\n\n        if topic_present==False:\n            append_topic = {\"topic\":query,\"fetched\":False}\n            wiki_config.append(append_topic)\n            \n            discoverer.update_crawler_config()\n            \n            save_to_file_flag = True \n    '''\n    if query is not None and save_to_file_flag is True:\n        save_to_file()\n    elif query is None:\n        save_to_file()",
+      "metadata": {
+        "function_name": "crawl",
+        "category": "function",
+        "language": "python",
+        "start_line": 506,
+        "end_line": 532,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    }
+  },
+  "../ai-engine/packages/query.py": {
+    "load_docs_26_32": {
+      "embedding": 19,
+      "code": "def load_docs(path=DOCS_PATH):\n    docs = []\n    with open(path, encoding=\"utf-8\") as f:\n        for line in f:\n            d = json.loads(line)\n            docs.append(d)\n    return docs",
+      "metadata": {
+        "function_name": "load_docs",
+        "category": "function",
+        "language": "python",
+        "start_line": 26,
+        "end_line": 32,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "load_index_34_37": {
+      "embedding": 20,
+      "code": "def load_index(path=INDEX_PATH):\n    with open(path,\"r\") as f:\n        index = json.load(f)\n    return index",
+      "metadata": {
+        "function_name": "load_index",
+        "category": "function",
+        "language": "python",
+        "start_line": 34,
+        "end_line": 37,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "load_stats_39_42": {
+      "embedding": 21,
+      "code": "def load_stats(path=STATS_PATH):\n    with open(path,\"r\") as f:\n        stats = json.load(f)\n    return stats",
+      "metadata": {
+        "function_name": "load_stats",
+        "category": "function",
+        "language": "python",
+        "start_line": 39,
+        "end_line": 42,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "query_score_46_50": {
+      "embedding": 22,
+      "code": "def query_score(q,d):\n    qset = set(tokenize(q))\n    dset = set(tokenize(d))\n\n    return len(qset.intersection(dset))",
+      "metadata": {
+        "function_name": "query_score",
+        "category": "function",
+        "language": "python",
+        "start_line": 46,
+        "end_line": 50,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "ranking_52_56": {
+      "embedding": 23,
+      "code": "def ranking(scores,top_k=5):\n    docs = load_docs(DOCS_PATH)\n    doc_map = {str(doc[\"id\"]) : doc[\"url\"] for doc in docs}\n    \n    return [(doc_id,doc_map.get(doc_id,\"\"),score) for doc_id,score in scores.most_common(top_k)]",
+      "metadata": {
+        "function_name": "ranking",
+        "category": "function",
+        "language": "python",
+        "start_line": 52,
+        "end_line": 56,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "tf_idf_59_77": {
+      "embedding": 24,
+      "code": "def tf_idf(query_tokens, index_path=INDEX_PATH, stats_path=STATS_PATH):\n    index = load_index(index_path)\n    stats = load_stats(stats_path)\n    N = stats[\"N\"]\n    doc_len = stats[\"doc_len\"]\n    scores = Counter()\n    \n    for word in query_tokens:\n        if word not in index:\n            continue\n        df = index[word][\"df\"] \n        idf = math.log((N+1)/(df+1))+1  # smoothed idf or also laplace smoothing\n        \n        for doc_id, doc_info in index[word][\"docs\"].items():\n            tf_raw = doc_info[\"tf\"]  # Get tf from the nested dictionary\n            tf = tf_raw / doc_len[doc_id]  # Normalize by document length\n            scores[doc_id] += tf * idf  # Use += to accumulate scores for multiple query terms\n    \n    return scores",
+      "metadata": {
+        "function_name": "tf_idf",
+        "category": "function",
+        "language": "python",
+        "start_line": 59,
+        "end_line": 77,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "bm25_80_100": {
+      "embedding": 25,
+      "code": "def bm25(query_tokens, index_path=INDEX_PATH, stats_path=STATS_PATH, k1=1.2, b=0.75):\n    index = load_index(index_path)\n    stats = load_stats(stats_path)\n    N = stats[\"N\"]\n    doc_len = stats[\"doc_len\"]\n    avg_len = stats[\"avg_len\"]\n    scores = Counter()\n    \n    for word in query_tokens:\n        if word not in index:\n            continue\n        df = index[word][\"df\"] \n        idf = math.log((N+1)/(df+1))+1  # smoothed idf or also laplace smoothing\n        \n        for doc_id, doc_info in index[word][\"docs\"].items():\n            ft_d = doc_info[\"tf\"]  # Get tf from the nested dictionary\n            l_doc = doc_len[doc_id] \n            bm25_score = idf * ((ft_d * (k1 + 1)) / (ft_d + (k1 * ((1 - b) + b * (l_doc / avg_len)))))\n            scores[doc_id] += bm25_score  # Use += to accumulate scores for multiple query terms\n    \n    return scores",
+      "metadata": {
+        "function_name": "bm25",
+        "category": "function",
+        "language": "python",
+        "start_line": 80,
+        "end_line": 100,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "query_index_102_110": {
+      "embedding": 26,
+      "code": "def query_index(query_tokens, index_path=INDEX_PATH):\n    \n    index = load_index(index_path)\n    \n    \n    tf_idf_scores = tf_idf(query_tokens)\n    bm25_scores = bm25(query_tokens)\n\n    return ranking(bm25_scores)",
+      "metadata": {
+        "function_name": "query_index",
+        "category": "function",
+        "language": "python",
+        "start_line": 102,
+        "end_line": 110,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "fuzzy_fill_113_134": {
+      "embedding": 27,
+      "code": "def fuzzy_fill(query_tokens,cutoff=80,index_path=INDEX_PATH):\n    \n    index = load_index(index_path)\n    \n    modified_tokens = []\n\n    for token in query_tokens:\n        if token not in index:\n            # find closest match in index keys using fuzzy matching\n            token_to_replace = process.extractOne(\n                token,\n                index.keys(),\n                score_cutoff=cutoff\n            )\n        \n            if token_to_replace:\n                matched_token = token_to_replace[0]\n                modified_tokens.append(matched_token)\n        else:\n            modified_tokens.append(token)\n\n    return modified_tokens",
+      "metadata": {
+        "function_name": "fuzzy_fill",
+        "category": "function",
+        "language": "python",
+        "start_line": 113,
+        "end_line": 134,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "check_phrase_in_doc_136_152": {
+      "embedding": 28,
+      "code": "def check_phrase_in_doc(positions_list):\n    \"\"\"\n    positions_list: [[pos1, pos2...], [pos1, pos2...], ...]\n    Returns count of phrase occurrences in doc\n    \"\"\"\n    count = 0\n    # For each position of the first term\n    for pos in positions_list[0]:\n        match = True\n        # Check if following terms appear in sequence\n        for i in range(1, len(positions_list)):\n            if (pos + i) not in positions_list[i]:\n                match = False\n                break\n        if match:\n            count += 1\n    return count",
+      "metadata": {
+        "function_name": "check_phrase_in_doc",
+        "category": "function",
+        "language": "python",
+        "start_line": 136,
+        "end_line": 152,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "phrase_search_154_176": {
+      "embedding": 29,
+      "code": "def phrase_search(phrase_terms, index_file=INDEX_PATH):\n    index = load_index()\n    docs = load_docs()\n    doc_map = {str(doc[\"id\"]) : doc[\"url\"] for doc in docs}\n\n    postings = []\n    for term in phrase_terms:\n        if term not in index:\n            return []\n        postings.append(index[term][\"docs\"])\n\n    common_docs = set(postings[0].keys())\n    for p in postings[1:]:\n        common_docs &= set(p.keys())\n    \n    scores = Counter()\n    for doc_id in common_docs:\n        positions_list = [postings[i][doc_id][\"pos\"] for i in range(len(phrase_terms))]\n        phrase_count = check_phrase_in_doc(positions_list)\n        if phrase_count > 0:\n            scores[doc_id] = phrase_count  # simple scoring\n    \n    return ranking(scores)",
+      "metadata": {
+        "function_name": "phrase_search",
+        "category": "function",
+        "language": "python",
+        "start_line": 154,
+        "end_line": 176,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "normal_search_178_179": {
+      "embedding": 30,
+      "code": "def normal_search(tokens, index_path):\n    return query_index(tokens, index_path=index_path)",
+      "metadata": {
+        "function_name": "normal_search",
+        "category": "function",
+        "language": "python",
+        "start_line": 178,
+        "end_line": 179,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "preprocess_query_181_184": {
+      "embedding": 31,
+      "code": "def preprocess_query(query):\n    tokens = tp.text_preprocess(query)\n    tokens = fuzzy_fill(tokens)\n    return tokens",
+      "metadata": {
+        "function_name": "preprocess_query",
+        "category": "function",
+        "language": "python",
+        "start_line": 181,
+        "end_line": 184,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "merge_results_186_204": {
+      "embedding": 32,
+      "code": "def merge_results(normal_results, phrase_results, phrase_boost=2.0):\n    combined_scores = Counter()\n    \n    # Add normal results\n    for doc_id,doc_url, score in normal_results:\n        combined_scores[doc_id] =  score\n        \n    # Add phrase results with boost\n    for doc_id,doc_url,phrase_score in phrase_results:\n        if not doc_url:\n            continue\n        if doc_id in combined_scores:\n            combined_scores[doc_id] += phrase_score * phrase_boost\n        else:\n            combined_scores[doc_id] = phrase_score\n\n    # Sort\n    \n    return ranking(combined_scores)",
+      "metadata": {
+        "function_name": "merge_results",
+        "category": "function",
+        "language": "python",
+        "start_line": 186,
+        "end_line": 204,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "embed_query_207_234": {
+      "embedding": 33,
+      "code": "def embed_query(query, faiss_path=FAISS_PATH, vector_path=VECTOR_PATH, k=3):\n    model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')\n    result = []\n    \n    try:    \n        faiss_index = faiss.read_index(faiss_path)\n        query_embeddings = model.encode([query])\n        query_embeddings = np.array(query_embeddings).astype('float32')\n        \n        distances, indices = faiss_index.search(query_embeddings, k)\n               \n        with open(vector_path, 'r') as f:\n            vector_map = json.load(f)  \n            \n            for i, vector_idx in enumerate(indices[0]):\n                doc_id = vector_map[str(vector_idx)]  # Convert to string key\n                if doc_id is None:\n                    continue\n                distance = distances[0][i]  # Get corresponding distance\n                result.append((doc_id, distance))\n                \n    except Exception as e:\n        print(f\"Error occurred while embedding query: {e}\")\n        return []\n    \n    result.sort(key=lambda x: x[1])  # Sort by distance (ascending)\n    print(f\"Result of embed query: {result}\")\n    return result",
+      "metadata": {
+        "function_name": "embed_query",
+        "category": "function",
+        "language": "python",
+        "start_line": 207,
+        "end_line": 234,
+        "issues": []
+      }
+    },
+    "union_weightage_236_246": {
+      "embedding": 34,
+      "code": "def union_weightage(lexical_results,embed_result,alpha=0.5,beta=0.8):\n    \n    scores = Counter()\n    \n    for (doc_id,_,score) in lexical_results:\n        scores[doc_id] = score*alpha \n\n    for (doc_id,distance) in embed_result:\n        scores[doc_id] += beta*distance  \n    \n    return ranking(scores)",
+      "metadata": {
+        "function_name": "union_weightage",
+        "category": "function",
+        "language": "python",
+        "start_line": 236,
+        "end_line": 246,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "cross_encoder_248_276": {
+      "embedding": 35,
+      "code": "def cross_encoder(query_raw, union_score_results):\n    print(f\"Running cross encoding\")\n    \n    docs = load_docs()\n    \n    doc_lookup = {doc[\"id\"]: doc[\"raw_text\"] for doc in docs}\n    \n    \n    scores_to_predict = []\n    enhanced_results = []\n    \n    for (doc_id, score1, score2) in union_score_results:\n        if doc_id in doc_lookup:\n            raw_text = doc_lookup[doc_id]\n            scores_to_predict.append((query_raw, raw_text))\n            enhanced_results.append((doc_id, score1, score2, raw_text))\n    \n    \n    scores = Counter()\n    \n    \n    model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')\n    model_scores = model.predict(scores_to_predict)\n    \n    \n    for idx, (doc_id, _, _, _) in enumerate(enhanced_results):\n        scores[doc_id] = model_scores[idx]\n    \n    return ranking(scores)",
+      "metadata": {
+        "function_name": "cross_encoder",
+        "category": "function",
+        "language": "python",
+        "start_line": 248,
+        "end_line": 276,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "rag_gen_278_298": {
+      "embedding": 36,
+      "code": "def rag_gen(query,cross_encoder_result):\n    \n    client = genai.Client(api_key=API_KEY)\n    \n    docs = load_docs()\n    doc_lookup = {doc[\"id\"]: doc[\"raw_text\"] for doc in docs}\n\n    top_docs = []\n    \n\n    for (doc_id,doc_url,score) in cross_encoder_result:\n        top_docs.append(doc_lookup[doc_id])\n\n    prompt = f'Answer the following question based on the provided context.\\n\\nContext:\\n{\" \".join(top_docs)}\\n\\nQuestion: {query}\\n\\nAnswer(under 100 words)(strictly adhere to the context and query and also give in format Answer Provided : and answer then. No unnecessary text except for answer):'\n    \n\n    response = client.models.generate_content(\n        model='gemini-2.0-flash',\n        contents=prompt\n    )\n    return response.text",
+      "metadata": {
+        "function_name": "rag_gen",
+        "category": "function",
+        "language": "python",
+        "start_line": 278,
+        "end_line": 298,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "response_query_323_343": {
+      "embedding": 37,
+      "code": "def response_query(query):\n    \n\n    tokens = preprocess_query(query)\n    \n    embed_result = embed_query(' '.join(query))\n    \n    normal_results = normal_search(tokens, INDEX_PATH)\n    phrase_results = phrase_search(tokens, INDEX_PATH)\n    \n\n    final_results_lexical = merge_results(normal_results, phrase_results)\n    \n    \n    union_score_result = union_weightage(final_results_lexical,embed_result)\n    \n    cross_encoder_result = cross_encoder(query,union_score_result)\n    \n    rag_answer = rag_gen(query,cross_encoder_result)\n\n    return (rag_answer,cross_encoder_result)",
+      "metadata": {
+        "function_name": "response_query",
+        "category": "function",
+        "language": "python",
+        "start_line": 323,
+        "end_line": 343,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    }
+  },
+  "../ai-engine/packages/text_preprocess.py": {
+    "tokenize_10_16": {
+      "embedding": 38,
+      "code": "def tokenize(s):\n    \n    stop_words = set(stopwords.words('english'))\n    # Tokenize and normalize to lowercase\n    tokens = word_tokenize(s.lower())\n    # Filter out stopwords\n    return [w for w in tokens if w not in stop_words and w.isalnum()]",
+      "metadata": {
+        "function_name": "tokenize",
+        "category": "function",
+        "language": "python",
+        "start_line": 10,
+        "end_line": 16,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "stemming_18_21": {
+      "embedding": 39,
+      "code": "def stemming(tokens):\n    stemmer = PorterStemmer()\n\n    return [stemmer.stem(t) for t in tokens]",
+      "metadata": {
+        "function_name": "stemming",
+        "category": "function",
+        "language": "python",
+        "start_line": 18,
+        "end_line": 21,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    },
+    "text_preprocess_23_29": {
+      "embedding": 40,
+      "code": "def text_preprocess(s):\n    print(f\"Text Pre-processing ... Done\")\n    tokens = tokenize(s)\n\n    stemmerized_tokens = stemming(tokens)\n\n    return stemmerized_tokens",
+      "metadata": {
+        "function_name": "text_preprocess",
+        "category": "function",
+        "language": "python",
+        "start_line": 23,
+        "end_line": 29,
+        "issues": [
+          "No error handling detected - consider using try/except blocks"
+        ]
+      }
+    }
+  }
+}
