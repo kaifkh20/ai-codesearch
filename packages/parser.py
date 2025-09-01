@@ -1,11 +1,13 @@
 import sys
 import os
+import json
 from tree_sitter import Language, Parser
 from tree_sitter_languages import get_language
 
 from google import genai
 from dotenv import load_dotenv
 import os
+import time
 load_dotenv()
 
 
@@ -82,6 +84,62 @@ class LanguageConfig:
                 return lang_name, config
         return None, None
 
+def load_index(index_path):
+    """Load existing index.json file if it exists"""
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load index file {index_path}: {e}")
+            return {}
+    return {}
+
+def save_index(index_data, index_path):
+    """Save index data to index.json file"""
+    try:
+        with open(index_path, 'w', encoding='utf-8') as f:
+            json.dump(index_data, f, indent=2, ensure_ascii=False)
+        print(f"Index saved to {index_path}")
+    except IOError as e:
+        print(f"Warning: Could not save index file {index_path}: {e}")
+
+def should_parse_file(file_path, index_data, check_mtime=True):
+    """
+    Check if a file should be parsed based on index data.
+    """
+    # Normalize path for consistent comparison
+    normalized_path = os.path.normpath(file_path)
+    
+    # If file is not in index, it should be parsed
+    if normalized_path not in index_data:
+        return True
+    
+    # If we're not checking modification time, skip parsing
+    if not check_mtime:
+        print(f"Skipping {file_path}: found in index")
+        return False
+    
+    # Check if file was modified since last indexing
+    try:
+        file_mtime = os.path.getmtime(file_path)
+
+        indexed_mtime = index_data[normalized_path].get('last_modified', 0)
+        
+        print("Normalized path",normalized_path)
+
+        if file_mtime > indexed_mtime:
+            print(f"Re-parsing {file_path}: file modified since last index")
+            return True
+        else:
+            print(f"Skipping {file_path}: up to date in index")
+            return False
+            
+    except (OSError, KeyError, TypeError):
+        # If there's any error checking modification time, parse the file
+        print(f"Re-parsing {file_path}: could not verify modification time")
+        return True
+
 def get_identifier_name(node, code, language_config=None):
     # --- Direct field name (works for Python, Java, etc.) ---
     name_node = node.child_by_field_name('name')
@@ -115,30 +173,27 @@ def _find_identifier_recursive(node, code):
             return result
     return None
 
-def summarize_code(code,fn_name):
+def summarize_code(code, fn_name):
+    print("========Summarizing Code==========")
+    client = genai.Client(api_key=API_KEY)
+    
+    prompt = f'''
+                You are a helpful code assistant.
 
-        print("========Summarizing Code==========")
-        client = genai.Client(api_key=API_KEY)
-        
-        
-        response = client.models.generate_content(
-            model = 'gemini-2.0-flash',
-            contents = prompt
-        )
-        
-        prompt = f'''
-                    You are a helpful code assistant.
+                Summarize what the following function(given with the function name) does in one or two sentences. 
+                Focus on the *purpose* of the function, not line-by-line details. 
+                Avoid repeating variable names unless necessary. 
+                If the function is a helper or utility, explain what it helps with.
 
-                    Summarize what the following function(given with the function name) does in one or two sentences. 
-                    Focus on the *purpose* of the function, not line-by-line details. 
-                    Avoid repeating variable names unless necessary. 
-                    If the function is a helper or utility, explain what it helps with.
+                Function {fn_name}:
+                {code}
 
-                    Function {fn_name}:
-                    {code}
-
-                '''       
-        return response.text
+            '''       
+    response = client.models.generate_content(
+        model = 'gemini-2.0-flash',
+        contents = prompt
+    )
+    return response.text
 
 
 def traverse_tree(node, code, path, language_config, context=None):
@@ -167,8 +222,8 @@ def traverse_tree(node, code, path, language_config, context=None):
             "fq_name": fq_name,
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
-            "code": code[node.start_byte:node.end_byte]
-            "summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
+            "code": code[node.start_byte:node.end_byte],
+            #"summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
         })
 
     # If this is a class, push its name onto the context stack
@@ -209,10 +264,29 @@ def extract_functions_from_file(path, max_lines=1000, parser=None, language_conf
     
     return chunks
 
-def read_files_multi_language(folder, languages=None):
-    """Read files for multiple languages"""
+def update_index_entry(index_data, file_path, chunks):
+    """Update index entry for a file with its parsed chunks and metadata"""
+    normalized_path = os.path.normpath(file_path)
+    try:
+        file_mtime = os.path.getmtime(file_path)
+    except OSError:
+        file_mtime = 0
+    
+    index_data[normalized_path] = {
+        'last_modified': file_mtime,
+        'chunk_count': len(chunks),
+        'chunks': chunks,
+        'indexed_at':time.time()
+    }
+
+def read_files_multi_language(folder, languages=None, index_file='index.json', check_mtime=True):
+    """Read files for multiple languages with index-based caching"""
     if languages is None:
         languages = ['python', 'javascript', 'typescript', 'java', 'cpp', 'c', 'rust', 'go']
+    
+    # Load existing index
+    index_path = os.path.join(folder, index_file)
+    index_data = load_index(index_path)
     
     # Create parsers for each language
     parsers = {}
@@ -227,8 +301,9 @@ def read_files_multi_language(folder, languages=None):
         except Exception as e:
             print(f"Could not load parser for {lang}: {e}")
     
-    chunks = []
+    all_chunks = []
     files_processed = 0
+    files_skipped = 0
     
     for root, sub_dirs, files in os.walk(folder):
         # Remove common directories to skip
@@ -238,19 +313,38 @@ def read_files_multi_language(folder, languages=None):
                 sub_dirs.remove(skip_dir)
         
         for file in files:
+            # Skip the index file itself
+            if file == index_file:
+                continue
+                
             path = os.path.join(root, file)
             
             # Determine language for this file
             lang_name, lang_config = LanguageConfig.get_language_for_file(path)
             
             if lang_name and lang_name in parsers:
-                parser = parsers[lang_name]
-                file_chunks = extract_functions_from_file(path, parser=parser, language_config=lang_config)
-                chunks.extend(file_chunks)
-                files_processed += 1
+                # Check if we should parse this file
+                if should_parse_file(path, index_data, check_mtime):
+                    parser = parsers[lang_name]
+                    file_chunks = extract_functions_from_file(path, parser=parser, language_config=lang_config)
+                    
+                    # Update index with new data
+                    update_index_entry(index_data, path, file_chunks)
+                    all_chunks.extend(file_chunks)
+                    files_processed += 1
+                else:
+                    # Load chunks from index
+                    normalized_path = os.path.normpath(path)
+                    if normalized_path in index_data and 'chunks' in index_data[normalized_path]:
+                        cached_chunks = index_data[normalized_path]['chunks']
+                        all_chunks.extend(cached_chunks)
+                        files_skipped += 1
     
-    print(f"\nProcessed {files_processed} files across {len(parsers)} languages")
-    return chunks
+    # Save updated index
+    save_index(index_data, index_path)
+    
+    print(f"\nProcessed {files_processed} files, skipped {files_skipped} files across {len(parsers)} languages")
+    return all_chunks
 
 def print_summary(chunks):
     """Print a nice summary of extracted items"""
@@ -258,21 +352,17 @@ def print_summary(chunks):
         print("No functions/classes found!")
         return
     
-    
     print(f"\n=== EXTRACTION SUMMARY ===")
     print(f"Total items: {len(chunks)}")
-    for chunk in chunks:
-        print(chunk)
     
 
-def read_files(folder, languages=None):
-    """Main entry point - supports multiple languages"""
-    return read_files_multi_language(folder, languages)
+def read_files(folder, languages=None, index_file='index.json', check_mtime=True):
+    """Main entry point - supports multiple languages with index-based caching"""
+    return read_files_multi_language(folder, languages, index_file, check_mtime)
 
 if __name__ == "__main__":
     folder_path = input("Folder: ")
     
-    
-    chunks = read_files(folder_path, languages)
+    # chunks = read_files(folder_path, languages=None, index_file='my_index.json', check_mtime=False)
+    chunks = read_files(folder_path)
     print_summary(chunks)
-    
