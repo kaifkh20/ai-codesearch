@@ -1,5 +1,4 @@
 
-````markdown
 # 🚀 AI Code Search
 
 An **AI-powered semantic and keyword code search engine** that helps developers quickly find relevant functions, classes, and snippets across large codebases.
@@ -31,10 +30,9 @@ By combining the power of **semantic search** with traditional **lexical methods
 
 2. Create a `.env` file with:
 
-   ```env
+   ```
    GEMINI_API=YOUR_GEMINI_API_KEY
-````
-
+   ```
 3. Run the following:
 
    ```bash
