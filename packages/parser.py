@@ -387,6 +387,10 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
     if languages is None:
         languages = ['python', 'javascript', 'typescript', 'java', 'cpp', 'c', 'rust', 'go']
     
+    if not os.path.exists(folder):
+        print("NO SUCH REPO EXISTS")
+        sys.exit(1)
+    
     # Load existing index
     index_path = "index.json"
     index_data = load_index(index_path)

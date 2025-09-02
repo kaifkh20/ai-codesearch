@@ -171,7 +171,7 @@ def union_score(cosine_scores, query):
 
 #--- Search Response
 
-def search_response(cosine_scores, query, alpha=0.7):
+def search_response(cosine_scores, query, alpha=0.65):
     """
     Hybrid scoring: cosine + keyword overlap + category + name/code boosts.
     Boosts:
@@ -201,8 +201,11 @@ def search_response(cosine_scores, query, alpha=0.7):
             fn_word_matches = sum(2.0 for word in words if word in fn_name_lower)
             
             # Slight mention bonus: if any word is in name or code
-            slight_mention = 0.2 if any(
-                (word in fn_name_lower or word in code_lower) for word in words
+            slight_mention = 0.5 if any(
+                (word in fn_name_lower) for word in words
+            ) else 0.0
+            slight_mention += 0.2 if any(
+                (word in code_lower) for word in words
             ) else 0.0
             
             keyword_score = (code_word_matches + fn_word_matches + slight_mention)
@@ -326,15 +329,16 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
     vector_mappings = load_embeddings(index_file)
     
     #Query rewriter
+    # 2. Read files and generate embeddings in batches
+    #code_chunks = read_files_python(folder, max_lines=max_lines)
+    
+    code_chunks = parser.read_files(folder)
+    
     if API_KEY:
         query_rewritten = query_rewriter(query)
     else:
         print("******API KEY IS NOT PROVIDED REWRITTEN QUERY IS TURNED OFF*****")
         query_rewritten = query.split(" ")
-    # 2. Read files and generate embeddings in batches
-    #code_chunks = read_files_python(folder, max_lines=max_lines)
-    
-    code_chunks = parser.read_files(folder)
 
     vector_mappings = generate_embeddings(
         chunks=code_chunks,
