@@ -1,7 +1,6 @@
 #THIS FILE IS GENERATED USING LLM(Lazy to do regex)
 
 import re
-import ast
 
 def rule_try_except(code, issues=None):
     """Check for proper error handling"""

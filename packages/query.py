@@ -1,5 +1,5 @@
 import os
-import ast
+
 import json
 import numpy as np
 from collections import Counter
@@ -9,7 +9,7 @@ from sentence_transformers.util import cos_sim
 import faiss
 from packages import bug
 from packages import parser
-from packages import models
+#from packages import models
 
 from google import genai
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 # --- Add to FAISS
 def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.json"):
     # Generate embeddings for all chunks in the batch
-    codes = [f'Summary:{chunk["summary"]}Code:{chunk["code"]}' for chunk in batch]
+    codes = [f'Summary:{chunk.get("summary"," ")}Code:{chunk["code"]}' for chunk in batch]
     embeddings = embedding_model.encode(codes, batch_size=16, convert_to_numpy=True, normalize_embeddings=True)
     embeddings = np.array(embeddings).astype('float32')
 
@@ -97,8 +97,10 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
             start = chunk["start"]
             end = chunk["end"]
             func_key = f"{fn_name}_{start}_{end}"
-            issues = bug.rules_bug(chunk["code"])
-
+            if chunk["language"]=='python':
+                issues = bug.rules_bug(chunk["code"])
+            else:
+                issues = []
             vector_mappings[path][func_key] = {
                 "embedding": faiss_ids[j],  # FAISS id
                 "code": chunk["code"],
@@ -171,11 +173,14 @@ def union_score(cosine_scores, query):
 
 def search_response(cosine_scores, query, alpha=0.7):
     """
-    Hybrid scoring: cosine + keyword overlap + category awareness.
-    Boosts classes if query hints at class/object.
+    Hybrid scoring: cosine + keyword overlap + category + name/code boosts.
+    Boosts:
+      - function name match: +2
+      - code match: +0.5
+      - slight mention (any match at all): +0.2
     """
-    query_lower = query.lower()
-    words = query_lower.split()
+    query_lower = ",".join(query).lower()
+    words = query_lower.split(',')
     
     vector_mappings = load_embeddings()
     enhanced_scores = {}
@@ -189,14 +194,21 @@ def search_response(cosine_scores, query, alpha=0.7):
             code = func_data['code']
             code_lower = code.lower()
             fn_name_lower = func_data['metadata']['function_name'].lower()
-            category = func_data['metadata'].get("category", "function")  # default
+            category = func_data['metadata'].get("category", "function")
             
             # --- keyword-based signals ---
-            code_word_matches = sum(1 for word in words if word in code_lower)
-            fn_word_matches = sum(1.5 for word in words if word in fn_name_lower)
+            code_word_matches = sum(0.5 for word in words if word in code_lower)
+            fn_word_matches = sum(2.0 for word in words if word in fn_name_lower)
             
-            keyword_count = sum(code_lower.count(word) for word in words)
-            keyword_score = keyword_count / len(words) if len(words) > 0 else 0
+            # Slight mention bonus: if any word is in name or code
+            slight_mention = 0.2 if any(
+                (word in fn_name_lower or word in code_lower) for word in words
+            ) else 0.0
+            
+            keyword_score = (code_word_matches + fn_word_matches + slight_mention)
+            
+            # Normalize to avoid huge inflation (optional)
+            keyword_score = keyword_score / len(words) if len(words) > 0 else 0
             
             # --- hybrid score ---
             final_score = alpha * cosine_score + (1 - alpha) * keyword_score
@@ -204,15 +216,13 @@ def search_response(cosine_scores, query, alpha=0.7):
             # --- category boosts ---
             if "class" in query_lower or "object" in query_lower:
                 if category == "class":
-                    final_score *= 1.2   # boost class results
-            
+                    final_score *= 1.2
             if "method" in query_lower or "member" in query_lower:
                 if category == "method":
-                    final_score *= 1.1   # boost methods slightly
-            
+                    final_score *= 1.1
             if "function" in query_lower or "def" in query_lower:
                 if category == "function":
-                    final_score *= 1.05  # boost functions slightly
+                    final_score *= 1.05
             
             enhanced_scores[combined_key] = {
                 'score': final_score,
@@ -223,6 +233,7 @@ def search_response(cosine_scores, query, alpha=0.7):
             }
     
     return enhanced_scores
+
 
 # --- Cross Encoder ---
 def cross_encoder(query, union_scores):
@@ -295,26 +306,18 @@ def format_response(results,bug_report=False):
 
 def query_rewriter(raw_query):
     print("=== QUERY REWRITER START ===")
-        
-    #prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
-    
-    
-    #rewritten_terms = models.generate("phi3",prompt)
     client = genai.Client(api_key=API_KEY)
-
     prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
-
-
     response = client.models.generate_content(
-        model = 'gemini-2.0-flash',
-        contents = prompt
+        model='gemini-2.0-flash',
+        contents=prompt
     )
-    rewritten_terms = response.text.split(',') 
-
+    # Clean up the split terms by stripping whitespace
+    rewritten_terms = [term.strip() for term in response.text.split(',')]
     print("=== QUERY REWRITER END ===")
+    print("Re-written Query", rewritten_terms)
     
-    print("Re-written Query",rewritten_terms)
-    return rewritten_terms
+    return rewritten_terms + raw_query.split(' ')
         
 
 # --- Full search pipeline ---
@@ -341,6 +344,7 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
         print("No embeddings available, exiting.")
         return
     
+    print("TYPE:",type(query_rewritten))
     # 3. Generate query embedding
     query_embedding = generate_query_embeddings(query=query_rewritten)
     
@@ -348,12 +352,10 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
     cosine_scores = cosine_sim_cal(query_embedding, vector_mappings, top_k=top_k*2)  # Get more for hybrid scoring
     
     # 5. Apply hybrid scoring
-    union_scores = union_score(cosine_scores, query)
+    union_scores = union_score(cosine_scores,query_rewritten)
     
     #6 Apply cross encoding
     final_scores = cross_encoder(query, union_scores)
-    
-
     # 7. Rank top K results
     ranked_results = ranking(final_scores, top_k=top_k)    
     # 7. Show output

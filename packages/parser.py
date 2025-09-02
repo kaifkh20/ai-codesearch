@@ -13,7 +13,6 @@ from packages import models
 
 load_dotenv()
 
-
 API_KEY = os.getenv("GEMINI_API")
 
 class LanguageConfig:
@@ -51,22 +50,22 @@ class LanguageConfig:
         'cpp': {
             'extensions': ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.h'],
             'language_name': 'cpp',
-            'function_types': ['function_definition', 'function_declarator'],
+            'function_types': ['function_definition'],  # ONLY function_definition, not function_declarator
             'class_types': ['class_specifier'],
             'method_types': ['function_definition'],
         },
         'c': {
             'extensions': ['.c', '.h'],
             'language_name': 'c',
-            'function_types': ['function_definition', 'function_declarator'],
-            'class_types': [],  # C doesn't have classes
+            'function_types': ['function_definition'],  # ONLY function_definition, not function_declarator
+            'class_types': [],  # C has structs
             'method_types': [],
         },
         'rust': {
             'extensions': ['.rs'],
             'language_name': 'rust',
             'function_types': ['function_item'],
-            'class_types': ['struct_item', 'enum_item'],
+            'class_types': ['struct_item', 'enum_item', 'impl_item'],
             'method_types': ['function_item'],  # Methods are also function_item in impl blocks
         },
         'go': {
@@ -126,11 +125,8 @@ def should_parse_file(file_path, index_data, check_mtime=True):
     # Check if file was modified since last indexing
     try:
         file_mtime = os.path.getmtime(file_path)
-
         indexed_mtime = index_data[normalized_path].get('last_modified', 0)
         
-        print("Normalized path",normalized_path)
-
         if file_mtime > indexed_mtime:
             print(f"Re-parsing {file_path}: file modified since last index")
             return True
@@ -143,61 +139,139 @@ def should_parse_file(file_path, index_data, check_mtime=True):
         print(f"Re-parsing {file_path}: could not verify modification time")
         return True
 
-def get_identifier_name(node, code, language_config=None):
-    # --- Direct field name (works for Python, Java, etc.) ---
+def get_identifier_name(node, code, language_name=None):
+    """Extract identifier name from AST node with language-specific handling"""
+    
+    # Direct field name (works for many languages)
     name_node = node.child_by_field_name('name')
     if name_node:
         return code[name_node.start_byte:name_node.end_byte]
-
-    # --- Shallow identifier check (works for many grammars) ---
+    
+    # Language-specific handling
+    if language_name == 'c' or language_name == 'cpp':
+        return get_c_cpp_identifier(node, code)
+    elif language_name == 'java':
+        return get_java_identifier(node, code)
+    elif language_name == 'rust':
+        return get_rust_identifier(node, code)
+    elif language_name == 'go':
+        return get_go_identifier(node, code)
+    elif language_name in ['javascript', 'typescript']:
+        return get_js_ts_identifier(node, code)
+    
+    # Fallback: look for any identifier in immediate children
     for child in node.children:
         if child.type in ('identifier', 'property_identifier', 'type_identifier', 'field_identifier'):
             return code[child.start_byte:child.end_byte]
-
-    # --- Special handling for C/C++ function definitions ---
-    if node.type == "function_definition":
-        declarator = node.child_by_field_name("declarator")
-        if declarator:
-            ident = _find_identifier_recursive(declarator, code)
-            if ident:
-                return ident
-
-    # --- Nothing found ---
+    
     return "unknown"
 
+def get_c_cpp_identifier(node, code):
+    """Extract identifier for C/C++ functions"""
+    if node.type == "function_definition":
+        # Look for declarator field first (most reliable)
+        declarator = node.child_by_field_name("declarator")
+        if declarator:
+            return _find_identifier_recursive(declarator, code)
+        
+        # Fallback: look through children for function_declarator
+        for child in node.children:
+            if child.type == "function_declarator":
+                # The identifier might be the declarator field of the function_declarator
+                inner_declarator = child.child_by_field_name("declarator")
+                if inner_declarator and inner_declarator.type == "identifier":
+                    return code[inner_declarator.start_byte:inner_declarator.end_byte]
+                
+                # Or it might be the first identifier child
+                for grandchild in child.children:
+                    if grandchild.type == "identifier":
+                        return code[grandchild.start_byte:grandchild.end_byte]
+        
+        # Last resort: look for any identifier in the entire function_definition
+        return _find_identifier_recursive(node, code)
+    
+    elif node.type in ["class_specifier", "struct_specifier"]:
+        name_node = node.child_by_field_name('name')
+        if name_node:
+            return code[name_node.start_byte:name_node.end_byte]
+        # Look for identifier after class/struct keyword
+        for i, child in enumerate(node.children):
+            if child.type in ["class", "struct"] and i + 1 < len(node.children):
+                next_child = node.children[i + 1]
+                if next_child.type == "type_identifier":
+                    return code[next_child.start_byte:next_child.end_byte]
+    
+    return _find_identifier_recursive(node, code)
+
+def get_java_identifier(node, code):
+    """Extract identifier for Java methods/classes"""
+    name_node = node.child_by_field_name('name')
+    if name_node:
+        return code[name_node.start_byte:name_node.end_byte]
+    
+    # For method declarations, look for identifier after modifiers and type
+    if node.type == "method_declaration":
+        for child in node.children:
+            if child.type == "identifier":
+                return code[child.start_byte:child.end_byte]
+    
+    return _find_identifier_recursive(node, code)
+
+def get_rust_identifier(node, code):
+    """Extract identifier for Rust functions/structs/enums"""
+    name_node = node.child_by_field_name('name')
+    if name_node:
+        return code[name_node.start_byte:name_node.end_byte]
+    
+    # Look for identifier after keywords
+    for i, child in enumerate(node.children):
+        if child.type in ["fn", "struct", "enum", "impl"] and i + 1 < len(node.children):
+            next_child = node.children[i + 1]
+            if next_child.type in ["identifier", "type_identifier"]:
+                return code[next_child.start_byte:next_child.end_byte]
+    
+    return _find_identifier_recursive(node, code)
+
+def get_go_identifier(node, code):
+    """Extract identifier for Go functions"""
+    name_node = node.child_by_field_name('name')
+    if name_node:
+        return code[name_node.start_byte:name_node.end_byte]
+    
+    # For function declarations, identifier usually follows 'func'
+    if node.type in ["function_declaration", "method_declaration"]:
+        for i, child in enumerate(node.children):
+            if child.type == "func" and i + 1 < len(node.children):
+                next_child = node.children[i + 1]
+                if next_child.type == "identifier":
+                    return code[next_child.start_byte:next_child.end_byte]
+    
+    return _find_identifier_recursive(node, code)
+
+def get_js_ts_identifier(node, code):
+    """Extract identifier for JavaScript/TypeScript functions"""
+    name_node = node.child_by_field_name('name')
+    if name_node:
+        return code[name_node.start_byte:name_node.end_byte]
+    
+    # Handle arrow functions and function expressions
+    if node.type == "arrow_function":
+        return "anonymous_arrow_function"
+    elif node.type == "function_expression" and not name_node:
+        return "anonymous_function"
+    
+    return _find_identifier_recursive(node, code)
 
 def _find_identifier_recursive(node, code):
     """Recursively search for an identifier inside declarators."""
-    if node.type == "identifier":
+    if node.type in ["identifier", "type_identifier", "field_identifier"]:
         return code[node.start_byte:node.end_byte]
+    
     for child in node.children:
         result = _find_identifier_recursive(child, code)
         if result:
             return result
     return None
-
-
-#NOT SUMMARIZING CODE BECAUSE OF RATE_LIMIT AND NOT USING LOCAL MODEL BECAUSE OF HARDWARE LIMITATIONS
-#def summarize_code(code, fn_name):
-    
-
-    #print("========Summarizing Code==========")
-    
-    #prompt = f'''
-     #           You are a helpful code assistant.
-
-      #          Summarize what the following function(given with the function name) does in one or two sentences. 
-       #         Focus on the *purpose* of the function, not line-by-line details. 
-           #     Avoid repeating variable names unless necessary. 
-          #      If the function is a helper or utility, explain what it helps with.
-
-         #       Function {fn_name}:
-        #        {code}
-
- #           '''       
-    #summary = models.generate("starcoder2",prompt)
-    
-    #return summary
 
 
 def traverse_tree(node, code, path, language_config, context=None):
@@ -206,36 +280,61 @@ def traverse_tree(node, code, path, language_config, context=None):
 
     chunks = []
     node_category = None
+    language_name = language_config['language_name']
 
     if node.type in language_config['function_types']:
-        node_category = 'function'
+        # For C/C++, only process function_definition, not function_declarator
+        if language_name in ['c', 'cpp'] and node.type == 'function_declarator':
+            # Skip function_declarator nodes - we want function_definition
+            pass
+        else:
+            node_category = 'function'
     elif node.type in language_config['method_types']:
         node_category = 'method'
     elif node.type in language_config['class_types']:
         node_category = 'class'
 
+    # Process relevant nodes
     if node_category:
-        name = get_identifier_name(node, code, language_config)
+        name = get_identifier_name(node, code, language_name)
         fq_name = '.'.join(context + [name]) if name != "unknown" else name
+        
+        # CRITICAL FIX: Always use the full node byte range, not a modified version
+        function_code = code[node.start_byte:node.end_byte]
+        
+        # Debug info to help track what we're capturing
+        if language_name in ['c', 'cpp']:
+            
+            if len(function_code) < 50:  # If suspiciously short, it might be wrong
+                print(f"WARNING: Function code seems too short for {name}: '{function_code}'")
+        
         chunks.append({
             "path": path,
-            "language": language_config['language_name'],
+            "language": language_name,
             "category": node_category,
             "node_type": node.type,
             "name": name,
             "fq_name": fq_name,
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
-            "code": code[node.start_byte:node.end_byte],
-            #"summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
+            "code": function_code,
+            # "summary" : summarize_code(function_code, fq_name)
         })
 
-    # If this is a class, push its name onto the context stack
+    # Update context for classes/structs
     new_context = list(context)
     if node.type in language_config['class_types']:
-        class_name = get_identifier_name(node, code, language_config)
+        class_name = get_identifier_name(node, code, language_name)
         if class_name != "unknown":
             new_context.append(class_name)
+    
+    # Special handling for Rust impl blocks
+    if language_name == 'rust' and node.type == 'impl_item':
+        # Try to get the type being implemented
+        type_node = node.child_by_field_name('type')
+        if type_node:
+            impl_type = code[type_node.start_byte:type_node.end_byte]
+            new_context.append(f"impl_{impl_type}")
 
     # Recurse into children with updated context
     for child in node.children:
@@ -280,7 +379,7 @@ def update_index_entry(index_data, file_path, chunks):
         'last_modified': file_mtime,
         'chunk_count': len(chunks),
         'chunks': chunks,
-        'indexed_at':time.time()
+        'indexed_at': time.time()
     }
 
 def read_files_multi_language(folder, languages=None, index_file='index.json', check_mtime=True):
@@ -289,7 +388,7 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
         languages = ['python', 'javascript', 'typescript', 'java', 'cpp', 'c', 'rust', 'go']
     
     # Load existing index
-    index_path = os.path.join(folder, index_file)
+    index_path = "index.json"
     index_data = load_index(index_path)
     
     # Create parsers for each language
@@ -311,7 +410,7 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
     
     for root, sub_dirs, files in os.walk(folder):
         # Remove common directories to skip
-        dirs_to_skip = ['.venv', '__pycache__', '.git', 'node_modules', 'target', 'build', 'dist']
+        dirs_to_skip = ['.venv', '__pycache__', '.git', 'node_modules', 'target', 'build', 'dist','test']
         for skip_dir in dirs_to_skip:
             if skip_dir in sub_dirs:
                 sub_dirs.remove(skip_dir)
@@ -359,6 +458,26 @@ def print_summary(chunks):
     print(f"\n=== EXTRACTION SUMMARY ===")
     print(f"Total items: {len(chunks)}")
     
+    # Group by language and category
+    by_language = {}
+    for chunk in chunks:
+        lang = chunk['language']
+        category = chunk['category']
+        if lang not in by_language:
+            by_language[lang] = {}
+        if category not in by_language[lang]:
+            by_language[lang][category] = 0
+        by_language[lang][category] += 1
+    
+    for lang, categories in by_language.items():
+        print(f"\n{lang.upper()}:")
+        for category, count in categories.items():
+            print(f"  {category}s: {count}")
+    
+    # Show some examples
+    print(f"\nSample extracted items:")
+    for i, chunk in enumerate(chunks[:5]):
+        print(f"{i+1}. [{chunk['language']}] {chunk['category']} '{chunk['name']}' in {os.path.basename(chunk['path'])}")
 
 def read_files(folder, languages=None, index_file='index.json', check_mtime=True):
     """Main entry point - supports multiple languages with index-based caching"""
@@ -367,6 +486,5 @@ def read_files(folder, languages=None, index_file='index.json', check_mtime=True
 if __name__ == "__main__":
     folder_path = input("Folder: ")
     
-    # chunks = read_files(folder_path, languages=None, index_file='my_index.json', check_mtime=False)
     chunks = read_files(folder_path)
     print_summary(chunks)
