@@ -176,24 +176,28 @@ def _find_identifier_recursive(node, code):
             return result
     return None
 
-def summarize_code(code, fn_name):
-    print("========Summarizing Code==========")
+
+#NOT SUMMARIZING CODE BECAUSE OF RATE_LIMIT AND NOT USING LOCAL MODEL BECAUSE OF HARDWARE LIMITATIONS
+#def summarize_code(code, fn_name):
     
-    prompt = f'''
-                You are a helpful code assistant.
 
-                Summarize what the following function(given with the function name) does in one or two sentences. 
-                Focus on the *purpose* of the function, not line-by-line details. 
-                Avoid repeating variable names unless necessary. 
-                If the function is a helper or utility, explain what it helps with.
-
-                Function {fn_name}:
-                {code}
-
-            '''       
-    summary = models.generate("starcoder2",prompt)
+    #print("========Summarizing Code==========")
     
-    return summary
+    #prompt = f'''
+     #           You are a helpful code assistant.
+
+      #          Summarize what the following function(given with the function name) does in one or two sentences. 
+       #         Focus on the *purpose* of the function, not line-by-line details. 
+           #     Avoid repeating variable names unless necessary. 
+          #      If the function is a helper or utility, explain what it helps with.
+
+         #       Function {fn_name}:
+        #        {code}
+
+ #           '''       
+    #summary = models.generate("starcoder2",prompt)
+    
+    #return summary
 
 
 def traverse_tree(node, code, path, language_config, context=None):
@@ -223,7 +227,7 @@ def traverse_tree(node, code, path, language_config, context=None):
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
             "code": code[node.start_byte:node.end_byte],
-            "summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
+            #"summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
         })
 
     # If this is a class, push its name onto the context stack

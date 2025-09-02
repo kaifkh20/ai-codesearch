@@ -109,7 +109,7 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
                     "start_line": start,
                     "end_line": end,
                     "issues": issues,
-                    "summary" : chunk['summary']
+                    #"summary" : chunk['summary']
                 }
             }
 
@@ -296,14 +296,25 @@ def format_response(results,bug_report=False):
 def query_rewriter(raw_query):
     print("=== QUERY REWRITER START ===")
         
+    #prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
+    
+    
+    #rewritten_terms = models.generate("phi3",prompt)
+    client = genai.Client(api_key=API_KEY)
+
     prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
-    
-    
-    rewritten_terms = models.generate("phi3",prompt)
+
+
+    response = client.models.generate_content(
+        model = 'gemini-2.0-flash',
+        contents = prompt
+    )
+    rewritten_terms = response.text.split(',') 
 
     print("=== QUERY REWRITER END ===")
     
-    return rewritten_terms.split(",")
+    print("Re-written Query",rewritten_terms)
+    return rewritten_terms
         
 
 # --- Full search pipeline ---
