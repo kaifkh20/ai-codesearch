@@ -8,6 +8,9 @@ from google import genai
 from dotenv import load_dotenv
 import os
 import time
+
+from packages import models
+
 load_dotenv()
 
 
@@ -175,7 +178,6 @@ def _find_identifier_recursive(node, code):
 
 def summarize_code(code, fn_name):
     print("========Summarizing Code==========")
-    client = genai.Client(api_key=API_KEY)
     
     prompt = f'''
                 You are a helpful code assistant.
@@ -189,11 +191,9 @@ def summarize_code(code, fn_name):
                 {code}
 
             '''       
-    response = client.models.generate_content(
-        model = 'gemini-2.0-flash',
-        contents = prompt
-    )
-    return response.text
+    summary = models.generate("starcoder2",prompt)
+    
+    return summary
 
 
 def traverse_tree(node, code, path, language_config, context=None):
@@ -223,7 +223,7 @@ def traverse_tree(node, code, path, language_config, context=None):
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
             "code": code[node.start_byte:node.end_byte],
-            #"summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
+            "summary" : summarize_code(code[node.start_byte:node.end_byte],fq_name)
         })
 
     # If this is a class, push its name onto the context stack

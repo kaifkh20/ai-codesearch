@@ -9,6 +9,7 @@ from sentence_transformers.util import cos_sim
 import faiss
 from packages import bug
 from packages import parser
+from packages import models
 
 from google import genai
 from dotenv import load_dotenv
@@ -294,31 +295,16 @@ def format_response(results,bug_report=False):
 
 def query_rewriter(raw_query):
     print("=== QUERY REWRITER START ===")
-    # Check API key
-    if not API_KEY:
-        print("ERROR: API_KEY is None or empty!")
-        return [raw_query]  # Fallback to original query
+        
+    prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
     
     
-    try:
-        client = genai.Client(api_key=API_KEY)
+    rewritten_terms = models.generate("phi3",prompt)
+
+    print("=== QUERY REWRITER END ===")
+    
+    return rewritten_terms.split(",")
         
-        prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
-        
-        response = client.models.generate_content(
-            model = 'gemini-2.0-flash',
-            contents = prompt
-        )
-        
-        rewritten_terms = response.text.split(',')
-        print("=== QUERY REWRITER END ===")
-        
-        return rewritten_terms
-        
-    except Exception as e:
-        print(f"ERROR in query_rewriter: {type(e).__name__}: {e}")
-        print("Falling back to original query")
-        return [raw_query]  # Fallback to original query
 
 # --- Full search pipeline ---
 def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
