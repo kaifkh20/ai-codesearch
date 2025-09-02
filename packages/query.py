@@ -326,8 +326,11 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
     vector_mappings = load_embeddings(index_file)
     
     #Query rewriter
-    query_rewritten = query_rewriter(query)
-
+    if API_KEY:
+        query_rewritten = query_rewriter(query)
+    else:
+        print("******API KEY IS NOT PROVIDED REWRITTEN QUERY IS TURNED OFF*****")
+        query_rewritten = query.split(" ")
     # 2. Read files and generate embeddings in batches
     #code_chunks = read_files_python(folder, max_lines=max_lines)
     
