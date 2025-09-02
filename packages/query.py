@@ -344,7 +344,6 @@ def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="ind
         print("No embeddings available, exiting.")
         return
     
-    print("TYPE:",type(query_rewritten))
     # 3. Generate query embedding
     query_embedding = generate_query_embeddings(query=query_rewritten)
     
