@@ -20,14 +20,14 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API")
 
 # Global singletons
-embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
+embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-small-en", trust_remote_code=True)
 cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 
 # --- Add to FAISS
 def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.json"):
     # Generate embeddings for all chunks in the batch
     codes = [f'Summary:{chunk.get("summary"," ")}Code:{chunk["code"]}' for chunk in batch]
-    embeddings = embedding_model.encode(codes, batch_size=16, convert_to_numpy=True, normalize_embeddings=True)
+    embeddings = embedding_model.encode(codes, batch_size=2, convert_to_numpy=True, normalize_embeddings=True)
     embeddings = np.array(embeddings).astype('float32')
 
     dimension = embeddings.shape[1]
@@ -68,7 +68,7 @@ def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.
 
     return batch_indices
 
-# --- Embedding generation with batching ---
+# --- Embedding generation with streaming ---
 def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_mappings=None):
     if not chunks:
         print("No chunks to generate embeddings for.")
@@ -77,6 +77,7 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
     if vector_mappings is None:
         vector_mappings = {}
 
+    # Group by path so we only process per file
     chunks_by_path = {}
     for chunk in chunks:
         chunks_by_path.setdefault(chunk["path"], []).append(chunk)
@@ -88,19 +89,27 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
 
         print(f"Processing {path} with {len(path_chunks)} chunks...")
 
-        # Add all chunks for this file to FAISS once
-        faiss_ids = add_to_faiss(path_chunks, path)
+        # Process in smaller batches to avoid OOM
+        faiss_ids = []
+        for i in range(0, len(path_chunks), batch_size):
+            mini_batch = path_chunks[i:i + batch_size]
+            faiss_ids.extend(add_to_faiss(mini_batch, path))
 
+        # Initialize per-file mapping
         vector_mappings[path] = {}
+
+        # Save results incrementally (instead of holding all in memory)
         for j, chunk in enumerate(path_chunks):
             fn_name = chunk["fq_name"] or chunk["name"]
             start = chunk["start"]
             end = chunk["end"]
             func_key = f"{fn_name}_{start}_{end}"
-            if chunk["language"]=='python':
+
+            if chunk["language"] == 'python':
                 issues = bug.rules_bug(chunk["code"])
             else:
                 issues = []
+
             vector_mappings[path][func_key] = {
                 "embedding": faiss_ids[j],  # FAISS id
                 "code": chunk["code"],
@@ -111,14 +120,15 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
                     "start_line": start,
                     "end_line": end,
                     "issues": issues,
-                    #"summary" : chunk['summary']
                 }
             }
 
-    with open(index_file, "w", encoding="utf-8") as f:
-        json.dump(vector_mappings, f, indent=2)
+        # Save after each file to avoid memory buildup
+        with open(index_file, "w", encoding="utf-8") as f:
+            json.dump(vector_mappings, f, indent=2)
 
     return vector_mappings
+
 
 # --- Load cached embeddings ---
 def load_embeddings(index_file="index.json"):
@@ -271,39 +281,85 @@ def cross_encoder(query, union_scores):
     return enhanced_scores
 
 
-# --- Ranking ---
+# --- Ranking with function-level collapsing ---
 def ranking(scores, top_k=5):
-    results = []
-    # Sort by score in descending order
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1]['score'], reverse=True)
+    grouped = {}
     
-    for i, (combined_key, data) in enumerate(sorted_scores[:top_k]):
+    # Group results by fq_name (function) instead of chunk
+    for combined_key, data in scores.items():
+        fn_name = data['metadata']['function_name']
+        path = data['path']
+        group_key = f"{path}::{fn_name}"
+
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "path": path,
+                "func_key": fn_name,
+                "code": data["code"],  # start with one chunk
+                "metadata": data["metadata"],
+                "score": data["score"],
+                "chunks": [data["code"]],
+            }
+        else:
+            # Update best score across chunks
+            grouped[group_key]["score"] = max(grouped[group_key]["score"], data["score"])
+            # Merge code snippets for context
+            grouped[group_key]["chunks"].append(data["code"])
+            # Update start/end line boundaries
+            grouped[group_key]["metadata"]["start_line"] = min(
+                grouped[group_key]["metadata"]["start_line"], data["metadata"]["start_line"]
+            )
+            grouped[group_key]["metadata"]["end_line"] = max(
+                grouped[group_key]["metadata"]["end_line"], data["metadata"]["end_line"]
+            )
+    
+    # Replace "code" with merged text for final output
+    for g in grouped.values():
+        g["code"] = "\n".join(g["chunks"])
+        del g["chunks"]
+
+    # Sort by score in descending order
+    sorted_scores = sorted(grouped.items(), key=lambda x: x[1]['score'], reverse=True)
+
+    results = []
+    for i, (group_key, data) in enumerate(sorted_scores[:top_k]):
         results.append({
-            "key": combined_key,
+            "key": group_key,
             "score": data['score'],
             "path": data['path'],
             "code": data['code'],
             "metadata": data['metadata']
         })
-    
+
     return results
 
 
-# --- Formatting output ---
-def format_response(results,bug_report=False):
+
+# --- Formatting output (grouped by function) ---
+def format_response(results, bug_report=False):
     if not results:
         print("No matches found.")
         return
+
     print("Found in:")
     for result in results:
-
         meta = result["metadata"]
+        func_name = meta["function_name"]
+        start, end = meta["start_line"], meta["end_line"]
+        score = result["score"]
+
         if bug_report:
-            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']}: {meta['function_name']}) | Score: {result['score']:.3f} | \n Issues :")
-            for issue in meta['issues']:
+            print(
+                f" - {result['path']}:{start}-{end} "
+                f"({meta['category']}: {func_name}) | Score: {score:.3f} | \n Issues :"
+            )
+            for issue in meta.get('issues', []):
                 print(f"\t- {issue}")
         else:
-            print(f" - {result['path']}:{meta['start_line']}-{meta['end_line']} ",f"({meta['category']} {meta['function_name']}) | Score: {result['score']:.3f}")
+            print(
+                f" - {result['path']}:{start}-{end} "
+                f"({meta['category']} {func_name}) | Score: {score:.3f}"
+            )
 
 # --- Query rewriter
 

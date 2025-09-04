@@ -15,6 +15,16 @@ load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API")
 
+# NEW CONFIG FOR CHUNKING
+# =======================
+MAX_LINES_PER_CHUNK = 300# adjust based on your model capacity
+
+
+def split_large_code_block(code, max_lines=MAX_LINES_PER_CHUNK):
+    lines = code.splitlines()
+    for i in range(0, len(lines), max_lines):
+        yield "\n".join(lines[i:i+max_lines])
+
 class LanguageConfig:
     """Configuration for different programming languages"""
     
@@ -278,14 +288,14 @@ def traverse_tree(node, code, path, language_config, context=None):
     if context is None:
         context = []
 
+
     chunks = []
     node_category = None
     language_name = language_config['language_name']
 
+
     if node.type in language_config['function_types']:
-        # For C/C++, only process function_definition, not function_declarator
         if language_name in ['c', 'cpp'] and node.type == 'function_declarator':
-            # Skip function_declarator nodes - we want function_definition
             pass
         else:
             node_category = 'function'
@@ -294,55 +304,55 @@ def traverse_tree(node, code, path, language_config, context=None):
     elif node.type in language_config['class_types']:
         node_category = 'class'
 
-    # Process relevant nodes
+
     if node_category:
         name = get_identifier_name(node, code, language_name)
         fq_name = '.'.join(context + [name]) if name != "unknown" else name
-        
-        # CRITICAL FIX: Always use the full node byte range, not a modified version
         function_code = code[node.start_byte:node.end_byte]
-        
-        # Debug info to help track what we're capturing
-        if language_name in ['c', 'cpp']:
-            
-            if len(function_code) < 50:  # If suspiciously short, it might be wrong
-                print(f"WARNING: Function code seems too short for {name}: '{function_code}'")
-        
-        chunks.append({
+
+
+        # ============
+        # NEW CHUNKING
+        # ============
+        for i, sub_code in enumerate(split_large_code_block(function_code)):
+            chunks.append({
             "path": path,
             "language": language_name,
             "category": node_category,
             "node_type": node.type,
-            "name": name,
+            "name": f"{name}__part{i+1}" if i > 0 else name,
             "fq_name": fq_name,
             "start": node.start_point[0] + 1,
             "end": node.end_point[0] + 1,
-            "code": function_code,
-            # "summary" : summarize_code(function_code, fq_name)
-        })
+            "code": sub_code,
+            })
 
-    # Update context for classes/structs
+
     new_context = list(context)
     if node.type in language_config['class_types']:
         class_name = get_identifier_name(node, code, language_name)
         if class_name != "unknown":
             new_context.append(class_name)
-    
-    # Special handling for Rust impl blocks
+
+
     if language_name == 'rust' and node.type == 'impl_item':
-        # Try to get the type being implemented
         type_node = node.child_by_field_name('type')
         if type_node:
             impl_type = code[type_node.start_byte:type_node.end_byte]
             new_context.append(f"impl_{impl_type}")
 
-    # Recurse into children with updated context
+
     for child in node.children:
         chunks.extend(traverse_tree(child, code, path, language_config, new_context))
 
+
     return chunks
 
-def extract_functions_from_file(path, max_lines=1000, parser=None, language_config=None):
+def extract_functions_from_file(path, max_lines=1000, parser=None, language_config=None, max_body_preview=50):
+    """
+    Extract functions/classes from file using tree-sitter.
+    If a chunk exceeds max_lines, keep only signature + docstring + preview.
+    """
     chunks = []
     if parser is None or language_config is None:
         print(f"No parser or language config defined for {path}")
@@ -352,20 +362,33 @@ def extract_functions_from_file(path, max_lines=1000, parser=None, language_conf
         with open(path, "r", encoding="utf-8") as f:
             code = f.read()
         
-        if len(code.splitlines()) > max_lines:
-            print(f"Skipping {path}: too many lines ({len(code.splitlines())} > {max_lines})")
-            return chunks
-        
-        tree = parser.parse(code.encode('utf-8'))
+        tree = parser.parse(code.encode("utf-8"))
         root_node = tree.root_node
         
         chunks = traverse_tree(root_node, code, path, language_config)
-        print(f"Extracted {len(chunks)} items from {path}")
+
+        # --- truncate huge chunks safely ---
+        safe_chunks = []
+        for chunk in chunks:
+            code_lines = chunk["code"].splitlines()
+            if len(code_lines) > max_lines:
+                signature = code_lines[0]
+                docstring = ""
+                if len(code_lines) > 1 and code_lines[1].strip().startswith(('"""', "'''")):
+                    docstring = code_lines[1]
+                body_preview = "\n".join(code_lines[1 : 1 + max_body_preview])
+                truncated = "\n".join(
+                    [signature, docstring, body_preview, "    # ... [truncated] ..."]
+                )
+                chunk["code"] = truncated
+            safe_chunks.append(chunk)
         
+        print(f"Extracted {len(safe_chunks)} items from {path}")
+        return safe_chunks
+    
     except Exception as e:
         print(f"Could not parse {path}: {e}")
-    
-    return chunks
+        return chunks
 
 def update_index_entry(index_data, file_path, chunks):
     """Update index entry for a file with its parsed chunks and metadata"""
@@ -395,7 +418,7 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
     index_path = "index.json"
     index_data = load_index(index_path)
     
-    # Create parsers for each language
+    # Create parsers for each languagec
     parsers = {}
     for lang in languages:
         try:
@@ -413,11 +436,139 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
     files_skipped = 0
     
     for root, sub_dirs, files in os.walk(folder):
-        # Remove common directories to skip
-        dirs_to_skip = ['.venv', '__pycache__', '.git', 'node_modules', 'target', 'build', 'dist','test']
+        # Comprehensive list of directories to skip
+        dirs_to_skip = [
+            # Documentation
+            'docs', 'docs_src', 'documentation', 'doc', 'man', 'manual',
+            
+            # Testing
+            'tests', 'test', 'testing', '__tests__', 'spec', 'specs', 'e2e', 'integration', 'unit',
+            
+            # Build/Output directories
+            'build', 'dist', 'out', 'output', 'target', 'bin', 'obj', 'release', 'debug',
+            'public', 'static', 'assets', 'generated', 'gen', 'tmp', 'temp', 'cache',
+            
+            # Dependencies/Libraries
+            'node_modules', 'bower_components', 'vendor', 'vendors', 'lib', 'libs', 
+            'third_party', 'external', 'deps',
+            
+            # Python specific
+            '.venv', 'venv', 'env', '__pycache__', '.pytest_cache', '.tox', 
+            'site-packages', '.mypy_cache', '.coverage', 'htmlcov',
+            
+            # Version control
+            '.git', '.svn', '.hg', '.bzr', 'CVS',
+            
+            # IDE/Editor directories
+            '.vscode', '.idea', '.eclipse', '.settings', '.project', '.metadata',
+            '.vs', '.suo', '.user', 'nbproject',
+            
+            # Language/Framework specific build dirs
+            # Java/Scala
+            'target', 'classes', '.gradle', 'gradle',
+            # .NET
+            'bin', 'obj', 'packages', '.nuget',
+            # Ruby
+            '.bundle', 'vendor/bundle',
+            # PHP
+            'vendor', 'composer',
+            # Go
+            'vendor', 'bin',
+            # Rust
+            'target', 'Cargo.lock',
+            # JavaScript/TypeScript
+            'coverage', '.nyc_output', '.next', '.nuxt', '.parcel-cache',
+            # Mobile
+            'ios/build', 'android/build', '.expo', '.expo-shared',
+            
+            # CI/CD and deployment
+            '.github', '.gitlab', '.circleci', '.travis', '.appveyor', 
+            'deployment', 'deploy', '.aws', '.terraform',
+            
+            # Logs and runtime
+            'logs', 'log', '.log', 'crash-reports', 'error-reports',
+            
+            # OS specific
+            '.DS_Store', 'Thumbs.db', 'desktop.ini',
+            
+            # Package managers
+            '.npm', '.yarn', '.pnpm-store', '.composer', '.pip',
+            
+            # Backup and temporary
+            'backup', 'backups', '.backup', '.bak', '.tmp', '.temp',
+            
+            # Media and assets (usually not code)
+            'images', 'img', 'pictures', 'videos', 'audio', 'fonts', 'media',
+            'resources', 'res', 'assets/img', 'assets/images',
+            
+            # Localization (usually not logic code)
+            'locale', 'locales', 'i18n', 'l10n', 'translations',
+            
+            # Migrations and seeds (database specific, often not core logic)
+            'migrations', 'seeds', 'fixtures',
+            
+            # Configuration directories (unless they contain code)
+            'config', 'conf', 'cfg', '.config', 'settings',
+            
+            # Examples and samples
+            'examples', 'example', 'samples', 'sample', 'demo', 'demos',
+            
+            # Generated code directories
+            'generated', 'gen', 'autogen', 'codegen', 'proto', 'protobuf',
+            
+            # Docker
+            '.docker', 'docker',
+            
+            # Jupyter/IPython
+            '.ipynb_checkpoints',
+            
+            # R
+            '.Rproj.user',
+            
+            # Elixir
+            '_build', 'deps',
+            
+            # Flutter
+            '.dart_tool', '.flutter-plugins', '.flutter-plugins-dependencies',
+            
+            # Unity
+            'Library', 'Temp', 'Logs',
+            
+            # Xcode
+            '*.xcworkspace', '*.xcodeproj', 'DerivedData',
+            
+            # Android
+            '.gradle', 'build', 'captures', '.externalNativeBuild',
+            
+            # Web specific
+            'bower_components', 'jspm_packages', 'web_modules',
+        ]
+        
+        # Additional patterns to check (case-insensitive)
+        skip_patterns = [
+            'test_', 'tests_', '_test', '_tests',
+            'spec_', 'specs_', '_spec', '_specs',
+            'build_', '_build', 'dist_', '_dist',
+            'temp_', '_temp', 'tmp_', '_tmp',
+            'cache_', '_cache', 'backup_', '_backup',
+        ]
+        
+        # Remove directories to skip
         for skip_dir in dirs_to_skip:
             if skip_dir in sub_dirs:
                 sub_dirs.remove(skip_dir)
+        
+        # Remove directories matching patterns (case-insensitive)
+        dirs_to_remove = []
+        for dir_name in sub_dirs:
+            dir_lower = dir_name.lower()
+            for pattern in skip_patterns:
+                if pattern in dir_lower:
+                    dirs_to_remove.append(dir_name)
+                    break
+        
+        for dir_name in dirs_to_remove:
+            sub_dirs.remove(dir_name)
         
         for file in files:
             # Skip the index file itself
@@ -446,10 +597,10 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
                         cached_chunks = index_data[normalized_path]['chunks']
                         all_chunks.extend(cached_chunks)
                         files_skipped += 1
-    
+
     # Save updated index
     save_index(index_data, index_path)
-    
+
     print(f"\nProcessed {files_processed} files, skipped {files_skipped} files across {len(parsers)} languages")
     return all_chunks
 
