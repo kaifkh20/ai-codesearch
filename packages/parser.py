@@ -15,10 +15,7 @@ load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API")
 
-# NEW CONFIG FOR CHUNKING
-# =======================
-MAX_LINES_PER_CHUNK = 300# adjust based on your model capacity
-
+MAX_LINES_PER_CHUNK = 300
 
 def split_large_code_block(code, max_lines=MAX_LINES_PER_CHUNK):
     lines = code.splitlines()
@@ -34,7 +31,7 @@ class LanguageConfig:
             'language_name': 'python',
             'function_types': ['function_definition'],
             'class_types': ['class_definition'],
-            'method_types': ['function_definition'],  # Methods are also function_definition in Python
+            'method_types': ['function_definition'],
         },
         'javascript': {
             'extensions': ['.js', '.jsx', '.mjs'],
@@ -60,15 +57,15 @@ class LanguageConfig:
         'cpp': {
             'extensions': ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.h'],
             'language_name': 'cpp',
-            'function_types': ['function_definition'],  # ONLY function_definition, not function_declarator
+            'function_types': ['function_definition'],
             'class_types': ['class_specifier'],
             'method_types': ['function_definition'],
         },
         'c': {
             'extensions': ['.c', '.h'],
             'language_name': 'c',
-            'function_types': ['function_definition'],  # ONLY function_definition, not function_declarator
-            'class_types': [],  # C has structs
+            'function_types': ['function_definition'],
+            'class_types': [],
             'method_types': [],
         },
         'rust': {
@@ -76,13 +73,13 @@ class LanguageConfig:
             'language_name': 'rust',
             'function_types': ['function_item'],
             'class_types': ['struct_item', 'enum_item', 'impl_item'],
-            'method_types': ['function_item'],  # Methods are also function_item in impl blocks
+            'method_types': ['function_item'],
         },
         'go': {
             'extensions': ['.go'],
             'language_name': 'go',
             'function_types': ['function_declaration', 'method_declaration'],
-            'class_types': ['type_declaration'],  # Go uses type declarations for structs
+            'class_types': ['type_declaration'],
             'method_types': ['method_declaration'],
         }
     }
@@ -117,22 +114,16 @@ def save_index(index_data, index_path):
         print(f"Warning: Could not save index file {index_path}: {e}")
 
 def should_parse_file(file_path, index_data, check_mtime=True):
-    """
-    Check if a file should be parsed based on index data.
-    """
-    # Normalize path for consistent comparison
+    """Check if a file should be parsed based on index data."""
     normalized_path = os.path.normpath(file_path)
     
-    # If file is not in index, it should be parsed
     if normalized_path not in index_data:
         return True
     
-    # If we're not checking modification time, skip parsing
     if not check_mtime:
         print(f"Skipping {file_path}: found in index")
         return False
     
-    # Check if file was modified since last indexing
     try:
         file_mtime = os.path.getmtime(file_path)
         indexed_mtime = index_data[normalized_path].get('last_modified', 0)
@@ -145,65 +136,91 @@ def should_parse_file(file_path, index_data, check_mtime=True):
             return False
             
     except (OSError, KeyError, TypeError):
-        # If there's any error checking modification time, parse the file
         print(f"Re-parsing {file_path}: could not verify modification time")
         return True
 
+def clean_identifier_name(name):
+    """Clean and sanitize identifier names"""
+    if not name or name == "unknown":
+        return "unknown"
+    
+    # Remove common prefixes/suffixes that might be noise
+    name = name.strip()
+    
+    # Remove quotes if present
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    if name.startswith("'") and name.endswith("'"):
+        name = name[1:-1]
+    
+    # Remove whitespace and newlines
+    name = ''.join(name.split())
+    
+    # If name is empty after cleaning, return unknown
+    if not name:
+        return "unknown"
+    
+    return name
+
 def get_identifier_name(node, code, language_name=None):
-    """Extract identifier name from AST node with language-specific handling"""
+    """Extract identifier name from AST node with improved cleaning"""
     
     # Direct field name (works for many languages)
     name_node = node.child_by_field_name('name')
     if name_node:
-        return code[name_node.start_byte:name_node.end_byte]
+        name = code[name_node.start_byte:name_node.end_byte]
+        return clean_identifier_name(name)
     
     # Language-specific handling
     if language_name == 'c' or language_name == 'cpp':
-        return get_c_cpp_identifier(node, code)
+        name = get_c_cpp_identifier(node, code)
     elif language_name == 'java':
-        return get_java_identifier(node, code)
+        name = get_java_identifier(node, code)
     elif language_name == 'rust':
-        return get_rust_identifier(node, code)
+        name = get_rust_identifier(node, code)
     elif language_name == 'go':
-        return get_go_identifier(node, code)
+        name = get_go_identifier(node, code)
     elif language_name in ['javascript', 'typescript']:
-        return get_js_ts_identifier(node, code)
+        name = get_js_ts_identifier(node, code)
+    else:
+        # Fallback: look for any identifier in immediate children
+        name = None
+        for child in node.children:
+            if child.type in ('identifier', 'property_identifier', 'type_identifier', 'field_identifier'):
+                name = code[child.start_byte:child.end_byte]
+                break
     
-    # Fallback: look for any identifier in immediate children
-    for child in node.children:
-        if child.type in ('identifier', 'property_identifier', 'type_identifier', 'field_identifier'):
-            return code[child.start_byte:child.end_byte]
-    
-    return "unknown"
+    return clean_identifier_name(name) if name else "unknown"
 
 def get_c_cpp_identifier(node, code):
-    """Extract identifier for C/C++ functions"""
+    """Extract identifier for C/C++ functions with better error handling"""
     if node.type == "function_definition":
-        # Look for declarator field first (most reliable)
         declarator = node.child_by_field_name("declarator")
         if declarator:
-            return _find_identifier_recursive(declarator, code)
+            name = _find_identifier_recursive(declarator, code)
+            if name:
+                return name
         
-        # Fallback: look through children for function_declarator
+        # Look for function_declarator
         for child in node.children:
             if child.type == "function_declarator":
-                # The identifier might be the declarator field of the function_declarator
                 inner_declarator = child.child_by_field_name("declarator")
                 if inner_declarator and inner_declarator.type == "identifier":
                     return code[inner_declarator.start_byte:inner_declarator.end_byte]
                 
-                # Or it might be the first identifier child
+                # Look for first identifier
                 for grandchild in child.children:
                     if grandchild.type == "identifier":
                         return code[grandchild.start_byte:grandchild.end_byte]
         
-        # Last resort: look for any identifier in the entire function_definition
+        # Last resort
         return _find_identifier_recursive(node, code)
     
     elif node.type in ["class_specifier", "struct_specifier"]:
         name_node = node.child_by_field_name('name')
         if name_node:
             return code[name_node.start_byte:name_node.end_byte]
+        
         # Look for identifier after class/struct keyword
         for i, child in enumerate(node.children):
             if child.type in ["class", "struct"] and i + 1 < len(node.children):
@@ -219,7 +236,6 @@ def get_java_identifier(node, code):
     if name_node:
         return code[name_node.start_byte:name_node.end_byte]
     
-    # For method declarations, look for identifier after modifiers and type
     if node.type == "method_declaration":
         for child in node.children:
             if child.type == "identifier":
@@ -233,7 +249,6 @@ def get_rust_identifier(node, code):
     if name_node:
         return code[name_node.start_byte:name_node.end_byte]
     
-    # Look for identifier after keywords
     for i, child in enumerate(node.children):
         if child.type in ["fn", "struct", "enum", "impl"] and i + 1 < len(node.children):
             next_child = node.children[i + 1]
@@ -248,7 +263,6 @@ def get_go_identifier(node, code):
     if name_node:
         return code[name_node.start_byte:name_node.end_byte]
     
-    # For function declarations, identifier usually follows 'func'
     if node.type in ["function_declaration", "method_declaration"]:
         for i, child in enumerate(node.children):
             if child.type == "func" and i + 1 < len(node.children):
@@ -259,41 +273,65 @@ def get_go_identifier(node, code):
     return _find_identifier_recursive(node, code)
 
 def get_js_ts_identifier(node, code):
-    """Extract identifier for JavaScript/TypeScript functions"""
+    """Extract identifier for JavaScript/TypeScript functions with better anonymous handling"""
     name_node = node.child_by_field_name('name')
     if name_node:
         return code[name_node.start_byte:name_node.end_byte]
     
-    # Handle arrow functions and function expressions
+    # Handle different function types more specifically
     if node.type == "arrow_function":
-        return "anonymous_arrow_function"
-    elif node.type == "function_expression" and not name_node:
+        # Try to find if it's assigned to a variable
+        parent = node.parent
+        if parent and parent.type == "variable_declarator":
+            name_node = parent.child_by_field_name('name')
+            if name_node:
+                return f"arrow_{code[name_node.start_byte:name_node.end_byte]}"
+        return "anonymous_arrow"
+    
+    elif node.type == "function_expression":
+        # Try to find if it's assigned or a property
+        parent = node.parent
+        if parent:
+            if parent.type == "variable_declarator":
+                name_node = parent.child_by_field_name('name')
+                if name_node:
+                    return f"expr_{code[name_node.start_byte:name_node.end_byte]}"
+            elif parent.type == "pair":  # Object property
+                key_node = parent.child_by_field_name('key')
+                if key_node:
+                    return code[key_node.start_byte:key_node.end_byte]
         return "anonymous_function"
+    
+    elif node.type == "method_definition":
+        key_node = node.child_by_field_name('key')
+        if key_node:
+            return code[key_node.start_byte:key_node.end_byte]
     
     return _find_identifier_recursive(node, code)
 
 def _find_identifier_recursive(node, code):
-    """Recursively search for an identifier inside declarators."""
+    """Recursively search for an identifier with better filtering"""
+    if not node:
+        return None
+        
     if node.type in ["identifier", "type_identifier", "field_identifier"]:
         return code[node.start_byte:node.end_byte]
     
     for child in node.children:
         result = _find_identifier_recursive(child, code)
-        if result:
+        if result and result.strip():
             return result
     return None
-
 
 def traverse_tree(node, code, path, language_config, context=None):
     if context is None:
         context = []
 
-
     chunks = []
     node_category = None
     language_name = language_config['language_name']
 
-
+    # Determine node category
     if node.type in language_config['function_types']:
         if language_name in ['c', 'cpp'] and node.type == 'function_declarator':
             pass
@@ -304,55 +342,55 @@ def traverse_tree(node, code, path, language_config, context=None):
     elif node.type in language_config['class_types']:
         node_category = 'class'
 
-
     if node_category:
         name = get_identifier_name(node, code, language_name)
-        fq_name = '.'.join(context + [name]) if name != "unknown" else name
+        
+        # Skip if we couldn't extract a meaningful name
+        if not name or name == "unknown":
+            print(f"Warning: Could not extract name for {node_category} at line {node.start_point[0] + 1} in {path}")
+            name = f"unnamed_{node_category}_{node.start_point[0] + 1}"
+        
+        fq_name = '.'.join(context + [name]) if context else name
         function_code = code[node.start_byte:node.end_byte]
 
-
-        # ============
-        # NEW CHUNKING
-        # ============
+        # Chunking with improved naming
         for i, sub_code in enumerate(split_large_code_block(function_code)):
+            chunk_name = f"{name}_part{i+1}" if i > 0 else name
             chunks.append({
-            "path": path,
-            "language": language_name,
-            "category": node_category,
-            "node_type": node.type,
-            "name": f"{name}__part{i+1}" if i > 0 else name,
-            "fq_name": fq_name,
-            "start": node.start_point[0] + 1,
-            "end": node.end_point[0] + 1,
-            "code": sub_code,
+                "path": path,
+                "language": language_name,
+                "category": node_category,
+                "node_type": node.type,
+                "name": chunk_name,
+                "fq_name": fq_name,
+                "start": node.start_point[0] + 1,
+                "end": node.end_point[0] + 1,
+                "code": sub_code,
             })
 
-
+    # Update context for nested structures
     new_context = list(context)
     if node.type in language_config['class_types']:
         class_name = get_identifier_name(node, code, language_name)
-        if class_name != "unknown":
+        if class_name and class_name != "unknown":
             new_context.append(class_name)
-
 
     if language_name == 'rust' and node.type == 'impl_item':
         type_node = node.child_by_field_name('type')
         if type_node:
             impl_type = code[type_node.start_byte:type_node.end_byte]
-            new_context.append(f"impl_{impl_type}")
+            impl_type = clean_identifier_name(impl_type)
+            if impl_type != "unknown":
+                new_context.append(f"impl_{impl_type}")
 
-
+    # Recursively process children
     for child in node.children:
         chunks.extend(traverse_tree(child, code, path, language_config, new_context))
-
 
     return chunks
 
 def extract_functions_from_file(path, max_lines=1000, parser=None, language_config=None, max_body_preview=50):
-    """
-    Extract functions/classes from file using tree-sitter.
-    If a chunk exceeds max_lines, keep only signature + docstring + preview.
-    """
+    """Extract functions/classes from file using tree-sitter with better error handling"""
     chunks = []
     if parser is None or language_config is None:
         print(f"No parser or language config defined for {path}")
@@ -367,19 +405,22 @@ def extract_functions_from_file(path, max_lines=1000, parser=None, language_conf
         
         chunks = traverse_tree(root_node, code, path, language_config)
 
-        # --- truncate huge chunks safely ---
+        # Truncate huge chunks safely
         safe_chunks = []
         for chunk in chunks:
             code_lines = chunk["code"].splitlines()
             if len(code_lines) > max_lines:
-                signature = code_lines[0]
+                signature = code_lines[0] if code_lines else ""
                 docstring = ""
-                if len(code_lines) > 1 and code_lines[1].strip().startswith(('"""', "'''")):
+                if len(code_lines) > 1 and code_lines[1].strip().startswith(('"""', "'''", "/*", "//")):
                     docstring = code_lines[1]
-                body_preview = "\n".join(code_lines[1 : 1 + max_body_preview])
-                truncated = "\n".join(
-                    [signature, docstring, body_preview, "    # ... [truncated] ..."]
-                )
+                body_preview = "\n".join(code_lines[1:1 + max_body_preview])
+                truncated = "\n".join(filter(None, [
+                    signature,
+                    docstring,
+                    body_preview,
+                    "    # ... [truncated] ..."
+                ]))
                 chunk["code"] = truncated
             safe_chunks.append(chunk)
         
@@ -414,11 +455,10 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
         print("NO SUCH REPO EXISTS")
         sys.exit(1)
     
-    # Load existing index
     index_path = "index.json"
     index_data = load_index(index_path)
     
-    # Create parsers for each languagec
+    # Create parsers for each language
     parsers = {}
     for lang in languages:
         try:
@@ -464,21 +504,11 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
             '.vs', '.suo', '.user', 'nbproject',
             
             # Language/Framework specific build dirs
-            # Java/Scala
             'target', 'classes', '.gradle', 'gradle',
-            # .NET
             'bin', 'obj', 'packages', '.nuget',
-            # Ruby
             '.bundle', 'vendor/bundle',
-            # PHP
             'vendor', 'composer',
-            # Go
-            'vendor', 'bin',
-            # Rust
-            'target', 'Cargo.lock',
-            # JavaScript/TypeScript
             'coverage', '.nyc_output', '.next', '.nuxt', '.parcel-cache',
-            # Mobile
             'ios/build', 'android/build', '.expo', '.expo-shared',
             
             # CI/CD and deployment
@@ -497,17 +527,17 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
             # Backup and temporary
             'backup', 'backups', '.backup', '.bak', '.tmp', '.temp',
             
-            # Media and assets (usually not code)
+            # Media and assets
             'images', 'img', 'pictures', 'videos', 'audio', 'fonts', 'media',
             'resources', 'res', 'assets/img', 'assets/images',
             
-            # Localization (usually not logic code)
+            # Localization
             'locale', 'locales', 'i18n', 'l10n', 'translations',
             
-            # Migrations and seeds (database specific, often not core logic)
+            # Migrations and seeds
             'migrations', 'seeds', 'fixtures',
             
-            # Configuration directories (unless they contain code)
+            # Configuration directories
             'config', 'conf', 'cfg', '.config', 'settings',
             
             # Examples and samples
@@ -544,7 +574,6 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
             'bower_components', 'jspm_packages', 'web_modules',
         ]
         
-        # Additional patterns to check (case-insensitive)
         skip_patterns = [
             'test_', 'tests_', '_test', '_tests',
             'spec_', 'specs_', '_spec', '_specs',
@@ -558,7 +587,7 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
             if skip_dir in sub_dirs:
                 sub_dirs.remove(skip_dir)
         
-        # Remove directories matching patterns (case-insensitive)
+        # Remove directories matching patterns
         dirs_to_remove = []
         for dir_name in sub_dirs:
             dir_lower = dir_name.lower()
@@ -571,34 +600,28 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
             sub_dirs.remove(dir_name)
         
         for file in files:
-            # Skip the index file itself
             if file == index_file:
                 continue
                 
             path = os.path.join(root, file)
             
-            # Determine language for this file
             lang_name, lang_config = LanguageConfig.get_language_for_file(path)
             
             if lang_name and lang_name in parsers:
-                # Check if we should parse this file
                 if should_parse_file(path, index_data, check_mtime):
                     parser = parsers[lang_name]
                     file_chunks = extract_functions_from_file(path, parser=parser, language_config=lang_config)
                     
-                    # Update index with new data
                     update_index_entry(index_data, path, file_chunks)
                     all_chunks.extend(file_chunks)
                     files_processed += 1
                 else:
-                    # Load chunks from index
                     normalized_path = os.path.normpath(path)
                     if normalized_path in index_data and 'chunks' in index_data[normalized_path]:
                         cached_chunks = index_data[normalized_path]['chunks']
                         all_chunks.extend(cached_chunks)
                         files_skipped += 1
 
-    # Save updated index
     save_index(index_data, index_path)
 
     print(f"\nProcessed {files_processed} files, skipped {files_skipped} files across {len(parsers)} languages")
@@ -613,7 +636,6 @@ def print_summary(chunks):
     print(f"\n=== EXTRACTION SUMMARY ===")
     print(f"Total items: {len(chunks)}")
     
-    # Group by language and category
     by_language = {}
     for chunk in chunks:
         lang = chunk['language']
@@ -629,7 +651,6 @@ def print_summary(chunks):
         for category, count in categories.items():
             print(f"  {category}s: {count}")
     
-    # Show some examples
     print(f"\nSample extracted items:")
     for i, chunk in enumerate(chunks[:5]):
         print(f"{i+1}. [{chunk['language']}] {chunk['category']} '{chunk['name']}' in {os.path.basename(chunk['path'])}")
