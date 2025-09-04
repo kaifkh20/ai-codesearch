@@ -12,6 +12,9 @@ By combining the power of **semantic search** with traditional **lexical methods
 
 ---
 
+## Important
+Due to hardware compatibility there are small batches and usage of gemini and other small models + torch-cpu.
+
 ## ✨ Features (v1.0)
 
 - 🔍 **Semantic Search**: Uses **FAISS** and **embeddings** to understand the intent behind queries, retrieving code snippets even if wording doesn’t match exactly.  
