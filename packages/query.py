@@ -20,7 +20,7 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API")
 
 # Global singletons
-embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-small-en", trust_remote_code=True)
+embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 
 # --- Add to FAISS
@@ -142,7 +142,7 @@ def generate_query_embeddings(query):
     model = embedding_model
     return model.encode(query)
 
-def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=5):
+def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=10):
     
     # Ensure query_embed is 2D
     query_embed = np.array(query_embed, dtype=np.float32)
@@ -181,7 +181,7 @@ def union_score(cosine_scores, query):
 
 #--- Search Response
 
-def search_response(cosine_scores, query, alpha=0.65):
+def search_response(cosine_scores, query, alpha=0.7):
     """
     Hybrid scoring: cosine + keyword overlap + category + name/code boosts.
     Boosts:
@@ -207,8 +207,8 @@ def search_response(cosine_scores, query, alpha=0.65):
             category = func_data['metadata'].get("category", "function")
             
             # --- keyword-based signals ---
-            code_word_matches = sum(0.5 for word in words if word in code_lower)
-            fn_word_matches = sum(2.0 for word in words if word in fn_name_lower)
+            code_word_matches = sum(0.3 for word in words if word in code_lower)
+            fn_word_matches = sum(0.7 for word in words if word in fn_name_lower)
             
             # Slight mention bonus: if any word is in name or code
             slight_mention = 0.5 if any(
@@ -221,7 +221,7 @@ def search_response(cosine_scores, query, alpha=0.65):
             keyword_score = (code_word_matches + fn_word_matches + slight_mention)
             
             # Normalize to avoid huge inflation (optional)
-            keyword_score = keyword_score / len(words) if len(words) > 0 else 0
+            #keyword_score = keyword_score / len(words) if len(words) > 0 else 0
             
             # --- hybrid score ---
             final_score = alpha * cosine_score + (1 - alpha) * keyword_score
@@ -229,7 +229,7 @@ def search_response(cosine_scores, query, alpha=0.65):
             # --- category boosts ---
             if "class" in query_lower or "object" in query_lower:
                 if category == "class":
-                    final_score *= 1.2
+                    final_score *= 2
             if "method" in query_lower or "member" in query_lower:
                 if category == "method":
                     final_score *= 1.1
@@ -282,7 +282,7 @@ def cross_encoder(query, union_scores):
 
 
 # --- Ranking with function-level collapsing ---
-def ranking(scores, top_k=5):
+def ranking(scores, top_k=10):
     grouped = {}
     
     # Group results by fq_name (function) instead of chunk
@@ -380,7 +380,7 @@ def query_rewriter(raw_query):
         
 
 # --- Full search pipeline ---
-def search(folder, query, top_k=5, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
+def search(folder, query, top_k=10, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
     # 1. Load cached embeddings if exist
     vector_mappings = load_embeddings(index_file)
     
