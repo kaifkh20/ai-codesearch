@@ -23,6 +23,14 @@ API_KEY = os.getenv("GEMINI_API")
 embedding_model = SentenceTransformer("jinaai/jina-embeddings-v2-base-code", trust_remote_code=True)
 cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
 
+def generate_consistent_key(chunk):
+    """Generate a consistent key for both FAISS mapping and vector mapping"""
+    # Use the chunk name (which includes _part1, _part2 for split chunks) + start/end for uniqueness
+    name = chunk.get("fq_name", "unknown")
+    start = chunk.get("start", 0)
+    end = chunk.get("end", 0)
+    return f"{name}_{start}_{end}"
+
 # --- Add to FAISS
 def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.json"):
     # Generate embeddings for all chunks in the batch
@@ -48,14 +56,11 @@ def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.
     index.add(embeddings)
     batch_indices = list(range(start_index, index.ntotal))
 
-    # Update mapping
+    # Update mapping with consistent key generation
     for j, chunk in enumerate(batch):
         faiss_id = batch_indices[j]
-        fn_name = chunk["fq_name"] or chunk["name"]
-        start = chunk["start"]
-        end = chunk["end"]
+        func_key = generate_consistent_key(chunk)
 
-        func_key = f"{fn_name}_{start}_{end}"
         existing_mapping[str(faiss_id)] = {
             "path": path,
             "func_key": func_key,
@@ -63,19 +68,18 @@ def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.
 
     # Save index + mapping once
     faiss.write_index(index, faiss_file)
-    with open(vector_file, "w", encoding="utf-8") as f:
-        json.dump(existing_mapping, f, indent=2)
 
     return batch_indices
 
 # --- Embedding generation with streaming ---
-def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_mappings=None):
+def generate_embeddings(chunks, index_file="vector_index.json", batch_size=2, vector_mappings=None):
     if not chunks:
         print("No chunks to generate embeddings for.")
         return {}
 
     if vector_mappings is None:
         vector_mappings = {}
+
 
     # Group by path so we only process per file
     chunks_by_path = {}
@@ -98,12 +102,9 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
         # Initialize per-file mapping
         vector_mappings[path] = {}
 
-        # Save results incrementally (instead of holding all in memory)
+        # Save results incrementally with consistent key generation
         for j, chunk in enumerate(path_chunks):
-            fn_name = chunk["fq_name"] or chunk["name"]
-            start = chunk["start"]
-            end = chunk["end"]
-            func_key = f"{fn_name}_{start}_{end}"
+            func_key = generate_consistent_key(chunk)
 
             if chunk["language"] == 'python':
                 issues = bug.rules_bug(chunk["code"])
@@ -114,11 +115,13 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
                 "embedding": faiss_ids[j],  # FAISS id
                 "code": chunk["code"],
                 "metadata": {
-                    "function_name": fn_name,
+                    "function_name": chunk.get("name", "unknown"),
+                    "fq_name": chunk.get("fq_name", chunk.get("name", "unknown")),
                     "category": chunk["category"],
                     "language": chunk["language"],
-                    "start_line": start,
-                    "end_line": end,
+                    "start_line": chunk["start"],
+                    "end_line": chunk["end"],
+                    "node_type": chunk.get("node_type", "unknown"),
                     "issues": issues,
                 }
             }
@@ -131,11 +134,15 @@ def generate_embeddings(chunks, index_file="index.json", batch_size=2, vector_ma
 
 
 # --- Load cached embeddings ---
-def load_embeddings(index_file="index.json"):
+def load_embeddings(index_file="vector_index.json"):
     if not os.path.exists(index_file):
         return {}
-    with open(index_file, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(index_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        print(f"Error loading embeddings: {e}")
+        return {}
 
 # --- Query embedding ---
 def generate_query_embeddings(query):
@@ -159,19 +166,32 @@ def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=1
     except Exception as e:
         raise RuntimeError(f"Failed to load FAISS index: {e}")
 
+    if index.ntotal == 0:
+        print("FAISS index is empty!")
+        return Counter()
+
     distances, indices = index.search(query_embed, top_k)
     
-    with open("vector_map.json",'r') as f:
-        embed_map = json.load(f)
+    # Load vector mapping with error handling
+    try:
+        with open("vector_map.json",'r') as f:
+            embed_map = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading vector map: {e}")
+        return Counter()
 
     scores = Counter()
     for idx, distance in zip(indices[0], distances[0]):
         if idx == -1:
             continue
-        mapping =embed_map.get(str(idx))
+        mapping = embed_map.get(str(idx))
+        if mapping is None:
+            print(f"Warning: No mapping found for index {idx}")
+            continue
         combined_key = f"{mapping['path']}::{mapping['func_key']}"
         scores[combined_key] = float(distance)
 
+    print(f"Found {len(scores)} matches from cosine similarity")
     return scores
 
 # --- Union Score ----
@@ -189,6 +209,10 @@ def search_response(cosine_scores, query, alpha=0.7):
       - code match: +0.5
       - slight mention (any match at all): +0.2
     """
+    if not cosine_scores:
+        print("No cosine scores to process")
+        return {}
+        
     query_lower = ",".join(query).lower()
     words = query_lower.split(',')
     
@@ -197,31 +221,35 @@ def search_response(cosine_scores, query, alpha=0.7):
     
     for combined_key, cosine_score in cosine_scores.items():
         # Parse the combined key
-        path, func_key = combined_key.split("::")
+        
+        try:
+            path, func_key = combined_key.split("::")
+        except ValueError:
+            print(f"Warning: Invalid combined key format: {combined_key}")
+            continue
         
         if path in vector_mappings and func_key in vector_mappings[path]:
             func_data = vector_mappings[path][func_key]
             code = func_data['code']
             code_lower = code.lower()
             fn_name_lower = func_data['metadata']['function_name'].lower()
+            fq_name_lower = func_data['metadata']['fq_name'].lower()
             category = func_data['metadata'].get("category", "function")
             
             # --- keyword-based signals ---
             code_word_matches = sum(0.3 for word in words if word in code_lower)
             fn_word_matches = sum(0.7 for word in words if word in fn_name_lower)
+            fq_word_matches = sum(0.5 for word in words if word in fq_name_lower)
             
             # Slight mention bonus: if any word is in name or code
             slight_mention = 0.5 if any(
-                (word in fn_name_lower) for word in words
+                (word in fn_name_lower or word in fq_name_lower) for word in words
             ) else 0.0
             slight_mention += 0.2 if any(
                 (word in code_lower) for word in words
             ) else 0.0
             
-            keyword_score = (code_word_matches + fn_word_matches + slight_mention)
-            
-            # Normalize to avoid huge inflation (optional)
-            #keyword_score = keyword_score / len(words) if len(words) > 0 else 0
+            keyword_score = (code_word_matches + fn_word_matches + fq_word_matches + slight_mention)
             
             # --- hybrid score ---
             final_score = alpha * cosine_score + (1 - alpha) * keyword_score
@@ -244,7 +272,10 @@ def search_response(cosine_scores, query, alpha=0.7):
                 'code': code,
                 'metadata': func_data['metadata']
             }
+        else:
+            print(f"Warning: Could not find data for {combined_key}")
     
+    print(f"Enhanced scores: {len(enhanced_scores)} results")
     return enhanced_scores
 
 
@@ -283,29 +314,38 @@ def cross_encoder(query, union_scores):
 
 # --- Ranking with function-level collapsing ---
 def ranking(scores, top_k=10):
+    if not scores:
+        return []
+        
     grouped = {}
     
-    # Group results by fq_name (function) instead of chunk
+    # Group results by fq_name (function) instead of individual chunks
     for combined_key, data in scores.items():
-        fn_name = data['metadata']['function_name']
+        fq_name = data['metadata'].get('fq_name', data['metadata']['function_name'])
         path = data['path']
-        group_key = f"{path}::{fn_name}"
+        group_key = f"{path}::{fq_name}"
 
         if group_key not in grouped:
             grouped[group_key] = {
                 "path": path,
-                "func_key": fn_name,
+                "func_key": fq_name,
                 "code": data["code"],  # start with one chunk
-                "metadata": data["metadata"],
+                "metadata": data["metadata"].copy(),
                 "score": data["score"],
                 "chunks": [data["code"]],
+                "chunk_scores": [data["score"]],
             }
         else:
-            # Update best score across chunks
-            grouped[group_key]["score"] = max(grouped[group_key]["score"], data["score"])
+            # Update best score across chunks and merge code
+            if data["score"] > grouped[group_key]["score"]:
+                grouped[group_key]["score"] = data["score"]
+                grouped[group_key]["metadata"] = data["metadata"].copy()
+            
             # Merge code snippets for context
             grouped[group_key]["chunks"].append(data["code"])
-            # Update start/end line boundaries
+            grouped[group_key]["chunk_scores"].append(data["score"])
+            
+            # Update start/end line boundaries to encompass all chunks
             grouped[group_key]["metadata"]["start_line"] = min(
                 grouped[group_key]["metadata"]["start_line"], data["metadata"]["start_line"]
             )
@@ -315,8 +355,12 @@ def ranking(scores, top_k=10):
     
     # Replace "code" with merged text for final output
     for g in grouped.values():
-        g["code"] = "\n".join(g["chunks"])
+        # Sort chunks by their scores and combine them
+        chunk_pairs = list(zip(g["chunks"], g["chunk_scores"]))
+        chunk_pairs.sort(key=lambda x: x[1], reverse=True)  # Sort by score
+        g["code"] = "\n\n# --- [CHUNK SEPARATOR] ---\n\n".join([chunk for chunk, _ in chunk_pairs])
         del g["chunks"]
+        del g["chunk_scores"]
 
     # Sort by score in descending order
     sorted_scores = sorted(grouped.items(), key=lambda x: x[1]['score'], reverse=True)
@@ -341,54 +385,98 @@ def format_response(results, bug_report=False):
         print("No matches found.")
         return
 
-    print("Found in:")
+    print(f"Found {len(results)} matches:")
     for result in results:
         meta = result["metadata"]
         func_name = meta["function_name"]
+        fq_name = meta.get("fq_name", func_name)
         start, end = meta["start_line"], meta["end_line"]
         score = result["score"]
 
         if bug_report:
             print(
                 f" - {result['path']}:{start}-{end} "
-                f"({meta['category']}: {func_name}) | Score: {score:.3f} | \n Issues :"
+                f"({meta['category']}: {fq_name}) | Score: {score:.3f} | \n Issues :"
             )
             for issue in meta.get('issues', []):
                 print(f"\t- {issue}")
         else:
             print(
                 f" - {result['path']}:{start}-{end} "
-                f"({meta['category']} {func_name}) | Score: {score:.3f}"
+                f"({meta['category']} {fq_name}) | Score: {score:.3f}"
             )
 
 # --- Query rewriter
 
 def query_rewriter(raw_query):
     print("=== QUERY REWRITER START ===")
-    client = genai.Client(api_key=API_KEY)
-    prompt = f"Rewrite the following natural language query into developer code terms, keywords, and function names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=prompt
-    )
-    # Clean up the split terms by stripping whitespace
-    rewritten_terms = [term.strip() for term in response.text.split(',')]
-    print("=== QUERY REWRITER END ===")
-    print("Re-written Query", rewritten_terms)
-    
-    return rewritten_terms + raw_query.split(' ')
+    try:
+        client = genai.Client(api_key=API_KEY)
+        prompt = f"Rewrite the following natural language query into developer keywords, and function names or class names that might appear in the codebase.Query:{raw_query};Output as a comma-separated list of terms."
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
+        )
+        # Clean up the split terms by stripping whitespace
+        rewritten_terms = [term.strip() for term in response.text.split(',')]
+        print("Re-written Query", rewritten_terms)
+        print("=== QUERY REWRITER END ===")
         
+        return rewritten_terms + raw_query.split(' ')
+    except Exception as e:
+        print(f"Query rewriter error: {e}")
+        return raw_query.split(' ')
+
+# --- Debug function to inspect index state
+def debug_index_state():
+    print("=== INDEX DEBUG ===")
+    print(f"vector_index.json exists: {os.path.exists('vector_index.json')}")
+    print(f"index.faiss exists: {os.path.exists('index.faiss')}")
+    print(f"vector_map.json exists: {os.path.exists('vector_map.json')}")
+    
+    if os.path.exists('vector_index.json'):
+        with open('vector_index.json', 'r') as f:
+            data = json.load(f)
+            print(f"vector_index.json has {len(data)} files")
+            total_chunks = sum(len(file_data) for file_data in data.values())
+            print(f"Total chunks in vector_index.json: {total_chunks}")
+    
+    if os.path.exists('index.faiss'):
+        try:
+            index = faiss.read_index('index.faiss')
+            print(f"FAISS index has {index.ntotal} vectors")
+        except Exception as e:
+            print(f"Error reading FAISS index: {e}")
+    
+    if os.path.exists('vector_map.json'):
+        with open('vector_map.json', 'r') as f:
+            data = json.load(f)
+            print(f"vector_map.json has {len(data)} mappings")
+            # Show a sample mapping
+            if data:
+                sample_key = next(iter(data))
+                print(f"Sample mapping: {sample_key} -> {data[sample_key]}")
 
 # --- Full search pipeline ---
-def search(folder, query, top_k=10, batch_size=2, max_lines=2000, index_file="index.json",bugs=False):
+def search(folder, query, top_k=10, batch_size=2, max_lines=2000, index_file="vector_index.json", bugs=False, debug=False, force_rebuild=False):
+    print(f"=== SEARCH START for query: '{query}' ===")
+    
+    # Force rebuild if requested
+    if force_rebuild:
+        print("Force rebuild requested...")
+        force_rebuild_indices()
+    
+    if debug:
+        print("Before search:")
+        debug_index_state()
+    
     # 1. Load cached embeddings if exist
     vector_mappings = load_embeddings(index_file)
+    print(f"Loaded {len(vector_mappings)} files from cache")
     
-    #Query rewriter
     # 2. Read files and generate embeddings in batches
-    #code_chunks = read_files_python(folder, max_lines=max_lines)
-    
     code_chunks = parser.read_files(folder)
+    print(f"Found {len(code_chunks)} code chunks from parser")
     
     if API_KEY:
         query_rewritten = query_rewriter(query)
@@ -407,18 +495,43 @@ def search(folder, query, top_k=10, batch_size=2, max_lines=2000, index_file="in
         print("No embeddings available, exiting.")
         return
     
+    if debug:
+        print("After embedding generation:")
+        debug_index_state()
+    
     # 3. Generate query embedding
+    print("Generating query embedding...")
     query_embedding = generate_query_embeddings(query=query_rewritten)
     
     # 4. Cosine similarity
+    print("Computing cosine similarity...")
     cosine_scores = cosine_sim_cal(query_embedding, vector_mappings, top_k=top_k*2)  # Get more for hybrid scoring
     
+    if not cosine_scores:
+        print("No cosine similarity matches found.")
+        print("This might indicate index inconsistency. Try running with force_rebuild=True")
+        if debug:
+            print("After cosine similarity:")
+            debug_index_state()
+        return
+    
     # 5. Apply hybrid scoring
-    union_scores = union_score(cosine_scores,query_rewritten)
+    print("Applying hybrid scoring...")
+    union_scores = union_score(cosine_scores, query_rewritten)
+    
+    if not union_scores:
+        print("No union scores computed.")
+        print("This might indicate index inconsistency. Try running with force_rebuild=True")
+        return
     
     #6 Apply cross encoding
+    print("Applying cross-encoder re-ranking...")
     final_scores = cross_encoder(query, union_scores)
+    
     # 7. Rank top K results
     ranked_results = ranking(final_scores, top_k=top_k)    
-    # 7. Show output
-    format_response(ranked_results,bug_report=bugs)
+    
+    # 8. Show output
+    format_response(ranked_results, bug_report=bugs)
+    
+    print("=== SEARCH END ===")
