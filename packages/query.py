@@ -32,7 +32,7 @@ def generate_consistent_key(chunk):
     return f"{name}_{start}_{end}"
 
 # --- Add to FAISS
-def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_map.json"):
+def add_to_faiss(batch, path, faiss_file="index.faiss", vector_file="vector_index.json"):
     # Generate embeddings for all chunks in the batch
     codes = [f'Summary:{chunk.get("summary"," ")}Code:{chunk["code"]}' for chunk in batch]
     embeddings = embedding_model.encode(codes, batch_size=2, convert_to_numpy=True, normalize_embeddings=True)
@@ -174,22 +174,25 @@ def cosine_sim_cal(query_embed,vector_mappings,faiss_file="index.faiss", top_k=1
     
     # Load vector mapping with error handling
     try:
-        with open("vector_map.json",'r') as f:
+        with open("vector_index.json",'r') as f:
             embed_map = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"Error loading vector map: {e}")
         return Counter()
 
     scores = Counter()
+    
+    index_to_key_map = {}
+    for keys, values in embed_map.items():
+        for keys_func, data in values.items():
+            embedding_idx = data["embedding"]
+            combined_key = f"{keys}::{keys_func}"
+            index_to_key_map[embedding_idx] = combined_key
+            
     for idx, distance in zip(indices[0], distances[0]):
-        if idx == -1:
-            continue
-        mapping = embed_map.get(str(idx))
-        if mapping is None:
-            print(f"Warning: No mapping found for index {idx}")
-            continue
-        combined_key = f"{mapping['path']}::{mapping['func_key']}"
-        scores[combined_key] = float(distance)
+        if idx in index_to_key_map:
+            combined_key = index_to_key_map[idx]
+            scores[combined_key] = float(distance)
 
     print(f"Found {len(scores)} matches from cosine similarity")
     return scores
@@ -432,7 +435,7 @@ def debug_index_state():
     print("=== INDEX DEBUG ===")
     print(f"vector_index.json exists: {os.path.exists('vector_index.json')}")
     print(f"index.faiss exists: {os.path.exists('index.faiss')}")
-    print(f"vector_map.json exists: {os.path.exists('vector_map.json')}")
+    print(f"vector_index.json exists: {os.path.exists('vector_map.json')}")
     
     if os.path.exists('vector_index.json'):
         with open('vector_index.json', 'r') as f:
@@ -448,10 +451,10 @@ def debug_index_state():
         except Exception as e:
             print(f"Error reading FAISS index: {e}")
     
-    if os.path.exists('vector_map.json'):
-        with open('vector_map.json', 'r') as f:
+    if os.path.exists('vector_index.json'):
+        with open('vector_index.json', 'r') as f:
             data = json.load(f)
-            print(f"vector_map.json has {len(data)} mappings")
+            print(f"vector_index.json has {len(data)} mappings")
             # Show a sample mapping
             if data:
                 sample_key = next(iter(data))
