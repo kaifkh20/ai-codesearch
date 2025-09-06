@@ -24,8 +24,8 @@ Due to hardware compatibility there are small batches and usage of gemini and ot
 - 📂 **Multi-Language Support**: Parses and indexes code from **Python, C, C++, Go, and Java** with the fast **Tree-sitter** parsing library.  
 - 🏷 **Function & Class Extraction**: Indexes functions and classes as discrete units for more precise results compared to file-level searches.  
 - 🔑 **Lexical Search**: Falls back to keyword-based matching when semantic results are weak.  
-- 🐞 **Basic Bug Search (Python)**: Includes regex-based detection for common Python issues and anti-patterns.  
-
+- 🐞 **Basic Bug Search (Python)**: Includes regex-based detection for common Python issues and anti-patterns.
+-   **Incremental Indexing**: Index once and query as long as it's not modified. Improving speed.
 ---
 
 ## ⚡ Quick Start
