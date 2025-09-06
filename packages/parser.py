@@ -16,6 +16,7 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API")
 
 MAX_LINES_PER_CHUNK = 300
+MAX_FILE_LINES = 1000  # Max lines for whole file chunks
 
 def split_large_code_block(code, max_lines=MAX_LINES_PER_CHUNK):
     lines = code.splitlines()
@@ -32,6 +33,7 @@ class LanguageConfig:
             'function_types': ['function_definition'],
             'class_types': ['class_definition'],
             'method_types': ['function_definition'],
+            'decorator_types': ['decorator'],
         },
         'javascript': {
             'extensions': ['.js', '.jsx', '.mjs'],
@@ -39,6 +41,7 @@ class LanguageConfig:
             'function_types': ['function_declaration', 'function_expression', 'arrow_function'],
             'class_types': ['class_declaration'],
             'method_types': ['method_definition'],
+            'decorator_types': ['decorator'],
         },
         'typescript': {
             'extensions': ['.ts', '.tsx'],
@@ -46,6 +49,7 @@ class LanguageConfig:
             'function_types': ['function_declaration', 'function_signature', 'arrow_function'],
             'class_types': ['class_declaration'],
             'method_types': ['method_definition', 'method_signature'],
+            'decorator_types': ['decorator'],
         },
         'java': {
             'extensions': ['.java'],
@@ -53,6 +57,7 @@ class LanguageConfig:
             'function_types': ['method_declaration'],
             'class_types': ['class_declaration'],
             'method_types': ['method_declaration'],
+            'decorator_types': ['annotation'],
         },
         'cpp': {
             'extensions': ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.h'],
@@ -60,6 +65,7 @@ class LanguageConfig:
             'function_types': ['function_definition'],
             'class_types': ['class_specifier'],
             'method_types': ['function_definition'],
+            'decorator_types': [],
         },
         'c': {
             'extensions': ['.c', '.h'],
@@ -67,6 +73,7 @@ class LanguageConfig:
             'function_types': ['function_definition'],
             'class_types': [],
             'method_types': [],
+            'decorator_types': [],
         },
         'rust': {
             'extensions': ['.rs'],
@@ -74,6 +81,7 @@ class LanguageConfig:
             'function_types': ['function_item'],
             'class_types': ['struct_item', 'enum_item', 'impl_item'],
             'method_types': ['function_item'],
+            'decorator_types': ['attribute_item'],
         },
         'go': {
             'extensions': ['.go'],
@@ -81,6 +89,7 @@ class LanguageConfig:
             'function_types': ['function_declaration', 'method_declaration'],
             'class_types': ['type_declaration'],
             'method_types': ['method_declaration'],
+            'decorator_types': [],
         }
     }
     
@@ -162,14 +171,68 @@ def clean_identifier_name(name):
     
     return name
 
+def find_decorators_for_node(node, code, language_name):
+    """Find decorators/annotations for a given node"""
+    decorators = []
+    
+    # Look for decorators in siblings before this node
+    if node.parent:
+        for sibling in node.parent.children:
+            if sibling == node:
+                break
+            
+            if language_name == 'python' and sibling.type == 'decorator':
+                decorator_name = extract_decorator_name(sibling, code)
+                if decorator_name:
+                    decorators.append(decorator_name)
+            elif language_name in ['javascript', 'typescript'] and sibling.type == 'decorator':
+                decorator_name = extract_decorator_name(sibling, code)
+                if decorator_name:
+                    decorators.append(decorator_name)
+            elif language_name == 'java' and sibling.type == 'annotation':
+                decorator_name = extract_decorator_name(sibling, code)
+                if decorator_name:
+                    decorators.append(decorator_name)
+            elif language_name == 'rust' and sibling.type == 'attribute_item':
+                decorator_name = extract_decorator_name(sibling, code)
+                if decorator_name:
+                    decorators.append(decorator_name)
+    
+    return decorators
+
+def extract_decorator_name(decorator_node, code):
+    """Extract the name from a decorator node"""
+    decorator_text = code[decorator_node.start_byte:decorator_node.end_byte]
+    
+    # Clean up common decorator patterns
+    if decorator_text.startswith('@'):
+        decorator_text = decorator_text[1:]  # Remove @
+    if decorator_text.startswith('#['):
+        decorator_text = decorator_text[2:-1]  # Remove #[ ]
+    
+    # Extract just the name part (before parentheses)
+    if '(' in decorator_text:
+        decorator_text = decorator_text.split('(')[0]
+    
+    return clean_identifier_name(decorator_text)
+
 def get_identifier_name(node, code, language_name=None):
-    """Extract identifier name from AST node with improved cleaning"""
+    """Extract identifier name from AST node with improved cleaning and decorator handling"""
+    
+    # Check if this might be a decorator being mistaken for a function
+    decorators = find_decorators_for_node(node, code, language_name)
     
     # Direct field name (works for many languages)
     name_node = node.child_by_field_name('name')
     if name_node:
         name = code[name_node.start_byte:name_node.end_byte]
-        return clean_identifier_name(name)
+        base_name = clean_identifier_name(name)
+        
+        # If we have decorators, include them in the name for context
+        if decorators:
+            decorator_prefix = "_".join(decorators)
+            return f"{decorator_prefix}_{base_name}"
+        return base_name
     
     # Language-specific handling
     if language_name == 'c' or language_name == 'cpp':
@@ -190,7 +253,14 @@ def get_identifier_name(node, code, language_name=None):
                 name = code[child.start_byte:child.end_byte]
                 break
     
-    return clean_identifier_name(name) if name else "unknown"
+    base_name = clean_identifier_name(name) if name else "unknown"
+    
+    # Add decorator context if available
+    if decorators and base_name != "unknown":
+        decorator_prefix = "_".join(decorators)
+        return f"{decorator_prefix}_{base_name}"
+    
+    return base_name
 
 def get_c_cpp_identifier(node, code):
     """Extract identifier for C/C++ functions with better error handling"""
@@ -389,6 +459,42 @@ def traverse_tree(node, code, path, language_config, context=None):
 
     return chunks
 
+def create_whole_file_chunk(path, code, language_name):
+    """Create a chunk for the entire file when no functions/classes are found"""
+    filename = os.path.basename(path)
+    file_lines = code.splitlines()
+    
+    # If file is too large, split it
+    chunks = []
+    if len(file_lines) > MAX_FILE_LINES:
+        for i, sub_code in enumerate(split_large_code_block(code, MAX_FILE_LINES)):
+            chunk_name = f"{filename}_part{i+1}" if i > 0 else filename
+            chunks.append({
+                "path": path,
+                "language": language_name,
+                "category": "file",
+                "node_type": "file",
+                "name": chunk_name,
+                "fq_name": chunk_name,
+                "start": i * MAX_FILE_LINES + 1,
+                "end": min((i + 1) * MAX_FILE_LINES, len(file_lines)),
+                "code": sub_code,
+            })
+    else:
+        chunks.append({
+            "path": path,
+            "language": language_name,
+            "category": "file",
+            "node_type": "file",
+            "name": filename,
+            "fq_name": filename,
+            "start": 1,
+            "end": len(file_lines),
+            "code": code,
+        })
+    
+    return chunks
+
 def extract_functions_from_file(path, max_lines=1000, parser=None, language_config=None, max_body_preview=50):
     """Extract functions/classes from file using tree-sitter with better error handling"""
     chunks = []
@@ -405,23 +511,29 @@ def extract_functions_from_file(path, max_lines=1000, parser=None, language_conf
         
         chunks = traverse_tree(root_node, code, path, language_config)
 
+        # If no functions/classes found, create a whole file chunk
+        if not chunks:
+            print(f"No functions/classes found in {path}, creating file chunk")
+            chunks = create_whole_file_chunk(path, code, language_config['language_name'])
+        
         # Truncate huge chunks safely
         safe_chunks = []
         for chunk in chunks:
-            code_lines = chunk["code"].splitlines()
-            if len(code_lines) > max_lines:
-                signature = code_lines[0] if code_lines else ""
-                docstring = ""
-                if len(code_lines) > 1 and code_lines[1].strip().startswith(('"""', "'''", "/*", "//")):
-                    docstring = code_lines[1]
-                body_preview = "\n".join(code_lines[1:1 + max_body_preview])
-                truncated = "\n".join(filter(None, [
-                    signature,
-                    docstring,
-                    body_preview,
-                    "    # ... [truncated] ..."
-                ]))
-                chunk["code"] = truncated
+            if chunk["category"] != "file":  # Don't truncate file chunks, they're already split
+                code_lines = chunk["code"].splitlines()
+                if len(code_lines) > max_lines:
+                    signature = code_lines[0] if code_lines else ""
+                    docstring = ""
+                    if len(code_lines) > 1 and code_lines[1].strip().startswith(('"""', "'''", "/*", "//")):
+                        docstring = code_lines[1]
+                    body_preview = "\n".join(code_lines[1:1 + max_body_preview])
+                    truncated = "\n".join(filter(None, [
+                        signature,
+                        docstring,
+                        body_preview,
+                        "    # ... [truncated] ..."
+                    ]))
+                    chunk["code"] = truncated
             safe_chunks.append(chunk)
         
         print(f"Extracted {len(safe_chunks)} items from {path}")
@@ -626,6 +738,7 @@ def read_files_multi_language(folder, languages=None, index_file='index.json', c
 
     print(f"\nProcessed {files_processed} files, skipped {files_skipped} files across {len(parsers)} languages")
     return all_chunks
+
 
 def print_summary(chunks):
     """Print a nice summary of extracted items"""

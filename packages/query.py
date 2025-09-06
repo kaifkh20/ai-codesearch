@@ -268,6 +268,9 @@ def search_response(cosine_scores, query, alpha=0.7):
                 if category == "function":
                     final_score *= 1.05
             
+            if category=='file' and path in query_lower:
+                final_score*=1.2
+            
             enhanced_scores[combined_key] = {
                 'score': final_score,
                 'path': path,
@@ -463,11 +466,6 @@ def debug_index_state():
 # --- Full search pipeline ---
 def search(folder, query, top_k=10, batch_size=2, max_lines=2000, index_file="vector_index.json", bugs=False, debug=False, force_rebuild=False):
     print(f"=== SEARCH START for query: '{query}' ===")
-    
-    # Force rebuild if requested
-    if force_rebuild:
-        print("Force rebuild requested...")
-        force_rebuild_indices()
     
     if debug:
         print("Before search:")
