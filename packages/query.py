@@ -391,7 +391,7 @@ def format_response(results, bug_report=False):
         print("No matches found.")
         return
 
-    print(f"Found {len(results)} matches:")
+    print(f"\nFound {len(results)} matches:\n")
     for result in results:
         meta = result["metadata"]
         func_name = meta["function_name"]
